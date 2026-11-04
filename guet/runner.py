@@ -33,13 +33,15 @@ from .planner import (
 from .progress import coverage_percent, covered_seconds, merge_ranges, plan_chunks
 from .realtime import run_lanes
 from .telemetry import Telemetry
+from .ticker import run_ticks
 from .transport import TransportError
 from .util import TokenBucket, human_seconds, jitter_sleep, read_json, atomic_write_json, setup_logger
 
 log = setup_logger("runner")
 
 SPEED_PROFILES: dict[str, dict[str, Any]] = {
-    "realtime": {"chunk": 120, "gap": None},   # 按真实时间推进，间隔 = 段长
+    "realtime": {"chunk": 120, "gap": None},   # 每路独立时间线，等真实秒数
+    "tick": {"chunk": 120, "gap": None},       # 固定节拍：每 120s 一轮，所有路各推一段
     "probe": {"chunk": SERVER_MAX_SPAN_DEFAULT, "gap": (0.3, 0.8)},
     "normal": {"chunk": 120, "gap": (1.5, 3.0)},
     "human": {"chunk": 30, "gap": (5.0, 15.0)},
@@ -50,6 +52,7 @@ STATUS_FAILED = "failed"
 STATUS_SKIPPED = "skipped"
 STATUS_MANUAL = "manual"
 STATUS_DRYRUN = "dry-run"
+STATUS_PENDING = "pending"
 
 
 def resolve_lanes(value: Any, available: int) -> int:
@@ -479,8 +482,8 @@ class AccountRunner:
     def run_course(self, cid: int, only: set[int] | None = None, dry_run: bool = False) -> list[TaskResult]:
         speed_name = self.account.effective_speed(self.rt)
         speed = SPEED_PROFILES.get(speed_name, SPEED_PROFILES["normal"])
-        if speed_name in ("normal", "realtime") and self.rt.chunk_seconds:
-            chunk: int | None = int(self.rt.chunk_seconds)   # 这两种档位允许配置覆盖段长
+        if speed_name in ("normal", "realtime", "tick") and self.rt.chunk_seconds:
+            chunk: int | None = int(self.rt.chunk_seconds)   # 这几种档位允许配置覆盖段长
         else:
             chunk = int(speed["chunk"])
         chunk = min(chunk, self.max_span)                     # 服务端上限（默认 125s）
@@ -536,14 +539,26 @@ class AccountRunner:
         if speed_name == "realtime":
             lanes = self._resolve_realtime_lanes(videos)
             results.extend(run_lanes(self, videos, chunk, target, lanes))
+        elif speed_name == "tick":
+            interval = float(self.rt.tick_interval or chunk)
+            results.extend(
+                run_ticks(
+                    self, videos, chunk, target, interval,
+                    max_ticks=1 if self.rt.tick_once else None,
+                    threads=int(self.rt.tick_threads or 1),
+                )
+            )
         else:
             results.extend(self._run_videos(videos, chunk, gap, target))
         results.extend(self._run_materials(materials, target))
 
         done = sum(1 for r in results if r.status == STATUS_DONE)
+        failed = sum(1 for r in results if r.status == STATUS_FAILED)
+        pending = len(results) - done - failed
         self.log.info(
-            "课程 %s 处理结束：成功 %d / 失败 %d，用时 %s，请求 %d 次",
-            plan.name, done, len(results) - done, human_seconds(time.time() - started), self.request_count,
+            "课程 %s 处理结束：成功 %d / 失败 %d%s，用时 %s，请求 %d 次",
+            plan.name, done, failed, f" / 待续 {pending}" if pending else "",
+            human_seconds(time.time() - started), self.request_count,
         )
         self.state.update_course(cid, last_run=time.strftime("%Y-%m-%dT%H:%M:%S"),
                                  results=[r.to_dict() for r in results])

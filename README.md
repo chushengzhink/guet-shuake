@@ -227,6 +227,38 @@ python run.py run --all --speed realtime --lanes all       # 有多少视频开�
 
 实测参考（校园网关 RTT ≈335ms，21 个视频共 4h53m）：省心 3 路 ≈ 1h37m、推荐 5 路 ≈ 59m、极速 16 路 ≈ 20m（被最长单个视频 19m54s 卡住）。
 
+### 定时任务（tick 档：单线程 + 固定节拍）
+
+不搞多线程、不搞独立时间线，就一个循环：每 120 秒醒一次，把所有没看完的视频各推一段，然后睡回去。
+
+```powershell
+# 长驻：每 120 秒一轮
+python run.py run --all --speed tick
+
+# 单轮：跑一轮就退出（适合交给系统计划任务）
+python run.py run --account acc01 --speed tick --once
+
+# 生成 Windows 计划任务（每 2 分钟跑一轮 tick --once）
+python run.py schedule --account acc01 --every 2            # 只打印命令
+python run.py schedule --account acc01 --every 2 --install  # 真的创建
+python run.py schedule --account acc01 --delete             # 撤销
+```
+
+语义与实测：
+
+* 每个 tick 把**所有**未完成视频各推 `120s` 一段（正好卡在服务端 125s 上限下）；
+* 一轮 20 多个请求 3~8 秒发完，剩下 100 多秒都在等时钟 —— **所以这里多线程没有收益**，默认单线程（`--lane-threads 1`；调到 2~3 只是让同一轮的请求并发发出，缩不了那 120 秒，同账号并发写还有顶号风险）；
+* 关机、断网、Ctrl-C 都无所谓：`data/state.<账号>.json` 记着每个活动的进度，下次运行从断点继续；
+* 计划任务用 `%LOCALAPPDATA%\guet-shuake\tick-<账号>.bat` 包装（GBK 编码 + `chcp 936`，中文路径不会乱），日志写 `data/logs/tick-<账号>.log`。
+
+**什么时候用哪个**：
+
+| 场景 | 选择 |
+|---|---|
+| 现在就要刷完 | `--speed probe --gap 0.5`（整门课 1~2 分钟） |
+| 想低调、要真实时间线 | `--speed realtime --lanes auto`（并行多路） |
+| 想挂着不管、开机就跑一点 | `--speed tick` + `schedule --install`（单线程定时） |
+
 单账号 `normal` 大约 **5~10 分钟**（≈180 次请求）；`--per-account-jobs 3` 约 3 分钟。
 
 先探针再决定档位：
@@ -292,6 +324,9 @@ guet/
   progress.py          区间数学（合并/求补/切段）
   telemetry.py         /statistics 埋点镜像
   runner.py            单账号执行器（VideoJob / MaterialJob 状态机）
+  realtime.py          真实时间多路并行（lanes）
+  ticker.py            固定节拍 / 单线程定时任务
+  benchmark.py         性能自检 + 并行路数推荐
   probe.py             服务端接受度探针
   scheduler.py         多账号编排、课程缓存、错误隔离
   report.py            终端表格 + result.json

@@ -29,6 +29,7 @@ from .util import human_seconds
 
 STATUS_DONE = "done"
 STATUS_FAILED = "failed"
+STATUS_PENDING = "pending"
 
 
 class LaneJob:

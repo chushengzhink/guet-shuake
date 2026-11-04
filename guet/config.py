@@ -17,7 +17,7 @@ DEFAULT_UA = (
 )
 
 ENGINES = ("http", "browser")
-SPEEDS = ("realtime", "probe", "normal", "human")
+SPEEDS = ("realtime", "tick", "probe", "normal", "human")
 _NAME_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,40}$")
 
 
@@ -43,6 +43,9 @@ class RuntimeConfig:
     realtime_lanes: Any = 8          # 数字 / "auto"（按实测推荐）/ 0 或 "all"（有多少开多少）
     realtime_max_lanes: int = 16
     realtime_eta_seconds: int = 0    # 期望多久刷完（秒），0 = 默认 1 小时目标
+    tick_interval: int = 0           # tick 档的轮次间隔，0 = 等于段长（默认 120s）
+    tick_once: bool = False          # tick 档跑一轮就退出（配合计划任务）
+    tick_threads: int = 1            # tick 档同一轮内并发上报数（>1 有顶号风险，默认串行）
     account_jobs: int = 4
     per_account_jobs: int = 1
     rps: float = 3.0

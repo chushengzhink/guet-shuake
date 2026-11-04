@@ -91,12 +91,25 @@ def build_parser() -> argparse.ArgumentParser:
     bench.add_argument("--eta", type=float, default=None, help="希望多少分钟刷完（可选）")
     bench.add_argument("--rounds", type=int, default=5, help="延迟采样次数")
 
+    sched = sub.add_parser("schedule", help="生成/安装 Windows 计划任务：每 N 分钟跑一轮 tick")
+    add_common(sched, all_flag=False)
+    sched.add_argument("--every", type=int, default=2, help="每隔几分钟跑一轮（默认 2）")
+    sched.add_argument("--name", default=None, help="计划任务名，默认 guet-shuake-<账号>")
+    sched.add_argument("--install", action="store_true", help="真的创建计划任务")
+    sched.add_argument("--delete", action="store_true", help="删除该计划任务")
+
     run = sub.add_parser("run", help="开始刷课")
     add_common(run)
     run.add_argument("--course", type=int, action="append", default=[], help="指定课程 id，可重复")
     run.add_argument("--only", default="", help="只处理这些活动 id，逗号分隔")
-    run.add_argument("--speed", choices=["probe", "normal", "human", "realtime"], default=None)
-    run.add_argument("--chunk-seconds", type=int, default=None, help="normal/realtime 档的段长秒数")
+    run.add_argument("--speed", choices=["probe", "normal", "human", "realtime", "tick"], default=None)
+    run.add_argument("--chunk-seconds", type=int, default=None, help="normal/realtime/tick 档的段长秒数")
+    run.add_argument("--interval", type=float, default=None,
+                     help="tick 档每轮间隔秒数（默认=段长，即 120s）")
+    run.add_argument("--once", action="store_true",
+                     help="tick 档只跑一轮就退出（配合计划任务）")
+    run.add_argument("--lane-threads", type=int, default=None,
+                     help="tick 档同一轮内并发上报数（默认 1；>1 是同账号并发写，有顶号风险）")
     run.add_argument("--lanes", type=str, default=None,
                      help="realtime 并行路数：数字 / all（有多少开多少）/ auto（实测推荐）")
     run.add_argument("--eta", type=float, default=None, help="realtime 希望多少分钟刷完（配合 --lanes auto）")
@@ -148,6 +161,14 @@ def apply_overrides(app: AppConfig, args) -> None:
     if gap is not None:
         rt.gap_min = rt.gap_max = max(0.0, float(gap))
         rt.gap_explicit = True
+    interval = getattr(args, "interval", None)
+    if interval is not None:
+        rt.tick_interval = int(float(interval))
+    if getattr(args, "once", False):
+        rt.tick_once = True
+    lane_threads = getattr(args, "lane_threads", None)
+    if lane_threads is not None:
+        rt.tick_threads = max(1, int(lane_threads))
     if getattr(args, "no_telemetry", False):
         rt.telemetry = False
     if getattr(args, "headed", False):
@@ -249,6 +270,55 @@ def cmd_bench(app: AppConfig, args) -> int:
         transport.close()
 
 
+def cmd_schedule(app: AppConfig, args) -> int:
+    """把「每 N 分钟跑一轮 tick」做成 Windows 计划任务，关机断网都能续。"""
+    import os
+    import subprocess
+
+    account = pick_accounts(app, args)[0]
+    name = args.name or f"guet-shuake-{account.name}"
+
+    if args.delete:
+        cmd = ["schtasks", "/delete", "/tn", name, "/f"]
+        print(subprocess.list2cmdline(cmd))
+        subprocess.run(cmd, check=False)
+        return EXIT_OK
+
+    base = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "guet-shuake"
+    base.mkdir(parents=True, exist_ok=True)
+    bat = base / f"tick-{account.name}.bat"
+    log = app.root / app.runtime.state_dir / "logs" / f"tick-{account.name}.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+
+    body = "\r\n".join([
+        "@echo off",
+        # bat 用 GBK 存，这里先把代码页钉回 936，否则中文路径会被按 UTF-8 解成乱码
+        "chcp 936 >nul",
+        f'cd /d "{app.root}"',
+        f'"{sys.executable}" "{ROOT / "run.py"}" run --account {account.name} '
+        f'--speed tick --once >> "{log}" 2>&1',
+        "",
+    ])
+    bat.write_text(body, encoding="gbk", errors="replace")
+
+    cmd = ["schtasks", "/create", "/tn", name, "/tr", str(bat),
+           "/sc", "minute", "/mo", str(max(1, int(args.every))), "/f"]
+    line = subprocess.list2cmdline(cmd)
+    report.info(f"每 {args.every} 分钟跑一轮 tick（单轮模式，进度存 data/state.{account.name}.json）")
+    report.info(f"包装脚本：{bat}")
+    report.info(f"日志：{log}")
+    report.info(f"\n命令：\n  {line}")
+    if not args.install:
+        report.info("\n加 --install 直接创建；想撤销加 --delete")
+        return EXIT_OK
+    result = subprocess.run(cmd, check=False)
+    if result.returncode == 0:
+        report.info(f"已创建计划任务 {name}；查看：schtasks /query /tn \"{name}\"")
+        return EXIT_OK
+    report.info(f"创建失败（返回码 {result.returncode}）：用管理员 PowerShell 重跑上面的命令")
+    return EXIT_ERROR
+
+
 def cmd_run(app: AppConfig, args) -> int:
     accounts = pick_accounts(app, args)
     only = {int(x) for x in args.only.replace(",", " ").split() if x.strip().isdigit()} or None
@@ -283,6 +353,7 @@ def main(argv: list[str] | None = None) -> int:
         "list": cmd_list,
         "probe": cmd_probe,
         "bench": cmd_bench,
+        "schedule": cmd_schedule,
         "run": cmd_run,
     }
     try:

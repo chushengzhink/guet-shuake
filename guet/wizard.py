@@ -360,13 +360,15 @@ def choose_speed(rt: RuntimeConfig, ask: AskFn, bench_provider=None) -> tuple[st
         "  1) probe    125s 一段顶格上报，最快（实测 5 段 17 秒刷完一个 9 分钟视频）\n"
         "  2) normal   120s 一段，间隔 1.5~3s，默认\n"
         "  3) human    30s 一段 + 长间隔，慢但请求密度低\n"
-        "  4) realtime 按真实时间推进，多路并行；平台不校验真实时间，这个只是更低调，不快"
+        "  4) realtime 按真实时间推进，多路并行；平台不校验真实时间，这个只是更低调，不快\n"
+        "  5) tick     单线程定时：每 120s 一轮，所有视频各推一段（可挂计划任务，关机也不怕）"
     )
-    answer = ask("选节奏（1/2/3/4 或 p/n/h/r，回车=2）: ").strip().lower()
+    answer = ask("选节奏（1/2/3/4/5 或 p/n/h/r/t，回车=2）: ").strip().lower()
     mapping = {
         "1": "probe", "p": "probe", "probe": "probe",
         "3": "human", "h": "human", "human": "human",
         "4": "realtime", "r": "realtime", "realtime": "realtime", "实时": "realtime",
+        "5": "tick", "t": "tick", "tick": "tick", "定时": "tick",
     }
     speed = mapping.get(answer, "normal")
     target_raw = ask("目标百分比（回车=100，课程只要求 80% 可填 80）: ").strip()

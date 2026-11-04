@@ -28,6 +28,11 @@ realtime_lanes: auto
 realtime_max_lanes: 16     # 路数上限（= 一次最多开几个视频）
 realtime_eta_seconds: 0    # 期望多久刷完（秒），0 = 按 1 小时目标算路数
 
+# tick 档（单线程定时任务）：每 tick_interval 秒一轮，每轮所有在跑视频各推一段
+tick_interval: 120      # 0 = 等于段长
+tick_threads: 1         # 同一轮内并发上报数；一轮 20 多个请求几秒就发完，多线程没收益
+# tick_once 由命令行 --once 控制（配合 Windows 计划任务）
+
 # 并发与限速
 account_jobs: 4         # 同时跑几个账号
 per_account_jobs: 1     # 单账号内并发写；默认 1，session cookie 每响应轮换，调高有顶号风险
