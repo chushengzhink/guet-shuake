@@ -106,12 +106,33 @@ def run(server, tasks, chunk=100, target=100, lanes=2):
     runner = FakeRunner(server)
     results = run_lanes(
         runner, tasks, chunk, target, lanes,
-        clock=clock.now, sleep=clock.sleep, beat_seconds=0,
+        clock=clock.now, sleep=clock.sleep,
+        wait=lambda t: (clock.sleep(t), False)[1],   # 假等待：推进时钟且不取消
+        beat_seconds=0,
     )
     return runner, results, clock
 
 
 class RealtimeTest(unittest.TestCase):
+    def test_replans_when_server_does_not_count_first_report(self):
+        class DelayedServer(PerActivityServer):
+            def __init__(self):
+                super().__init__(60)
+                self.ignored = False
+
+            def report_video(self, aid, start, end, cid=None):
+                if not self.ignored:
+                    self.ignored = True
+                    self.calls.append((aid, start, end))
+                    return self._state(aid)
+                return super().report_video(aid, start, end, cid)
+
+        server = DelayedServer()
+        _, results, clock = run(server, [Task(1, 60)], chunk=100, lanes=1)
+        self.assertEqual(results[0].status, "done")
+        self.assertEqual(server.calls, [(1, 0, 60), (1, 0, 60)])
+        self.assertEqual(clock.t, 120)
+
     def test_timeline_is_real_and_lanes_parallel(self):
         server = PerActivityServer(300)
         tasks = [Task(1, 300), Task(2, 300), Task(3, 300)]
@@ -176,8 +197,6 @@ class RealtimeTest(unittest.TestCase):
         self.assertEqual(results[0].status, "done")
         self.assertEqual(server.calls, [(1, 100, 200), (1, 800, 900)])
         self.assertEqual(clock.t, 200)                  # 两段 × 100 秒真实时间
-        self.assertEqual(server.ranges[1], [[0, 100], [100, 200], [200, 800],
-                                            [800, 900], [900, 1000]][:0] or server.ranges[1])
         covered = covered_seconds(server.ranges[1])
         self.assertEqual(covered, 1000)
 

@@ -18,7 +18,7 @@ from typing import Callable, Sequence
 
 from .client import SERVER_MAX_SPAN_DEFAULT
 from .realtime import STATUS_DONE, STATUS_FAILED, LaneJob
-from .cancel import requested as cancel_requested
+from .cancel import requested as cancel_requested, wait as cancel_wait
 from .util import human_seconds
 
 STATUS_PENDING = "pending"
@@ -53,6 +53,7 @@ def run_ticks(
     *,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
+    wait: Callable[[float], bool] | None = None,
     max_ticks: int | None = None,
     lanes: int = 0,
     threads: int = 1,
@@ -146,7 +147,8 @@ def run_ticks(
                 "  ‖ 第 %d 轮：%d 路在跑，最慢 %.0f%%，累计 %s",
                 ticks, len(active), min(j.percent for j in active), human_seconds(clock() - started),
             )
-        sleep(interval)
+        if (wait or cancel_wait)(interval):   # R10：停止能立刻唤醒等待
+            continue
 
     if max_ticks != 1:
         runner.log.info(

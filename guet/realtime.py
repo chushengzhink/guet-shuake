@@ -25,12 +25,30 @@ from .client import (
 )
 from .progress import complement, merge_ranges
 from .transport import TransportError
-from .cancel import requested as cancel_requested
+from .cancel import requested as cancel_requested, wait as cancel_wait
 from .util import human_seconds
 
 STATUS_DONE = "done"
 STATUS_FAILED = "failed"
 STATUS_PENDING = "pending"
+
+
+def _pending_result(task, detail: str):
+    """给「还没开始就被取消」的活动生成一条 pending 结果（延迟导入避免循环）。"""
+    from .runner import TaskResult
+
+    return TaskResult(
+        course_id=task.course_id,
+        activity_id=task.activity_id,
+        type=task.type,
+        title=task.title,
+        action="video",
+        status=STATUS_PENDING,
+        completeness=0,
+        detail=detail,
+        chunks=0,
+        elapsed=0.0,
+    )
 
 
 class LaneJob:
@@ -123,14 +141,24 @@ class LaneJob:
         except (TronClassError, TransportError) as exc:
             limit = parse_max_span(str(exc))
             if limit:
-                # 服务端告诉了我们单段上限：改小段长，10 秒后重发这一段
-                self.chunk = max(1, min(self.chunk, limit))
+                # R06：只有真的把段长改小才算学到新信息；同一上限反复拒绝要计入预算
+                new_chunk = max(1, min(self.chunk, limit))
+                learned = new_chunk < self.chunk
+                self.chunk = new_chunk
                 self.runner.max_span = min(getattr(self.runner, "max_span", limit), limit)
                 self.detail = f"服务端上限 {limit}s，改用 {self.chunk}s 段"
-                self.runner.log.info(
-                    "  ‖ %s 服务端限制单段 ≤%ss，改用 %ss 段", self.task.label, limit, self.chunk
-                )
+                if learned:
+                    self.retries = 0
+                    self.runner.log.info(
+                        "  ‖ %s 服务端限制单段 ≤%ss，改用 %ss 段", self.task.label, limit, self.chunk
+                    )
+                else:
+                    self.retries += 1
                 self.next_at = now + 10
+                if self.retries > 3:
+                    self.failed = True
+                    self.detail = f"服务端持续拒绝上报（单段上限 {limit}s），放弃该活动"
+                    return "failed"
                 return "progress"
             self.retries += 1
             self.detail = f"{start}-{end}s 上报异常：{exc}"
@@ -142,7 +170,6 @@ class LaneJob:
 
         self.sent += 1
         self.history.append((now, start, end))
-        self.next_at = now + max(1, end - start)
 
         state, percent, _ = parse_activity_read(resp)
         if percent > self.percent:
@@ -158,6 +185,14 @@ class LaneJob:
         if end >= gap_end:                         # 这个缺口补齐了，换下一个
             self.gaps.pop(0)
             self.cursor = self.gaps[0][0] if self.gaps else self.total
+        # R05：按「即将上报的那一段」的长度等待，而不是刚上报完的长度
+        if self.gaps:
+            next_start = max(self.cursor, self.gaps[0][0])
+            next_end = min(next_start + self.chunk, self.gaps[0][1])
+            wait = max(1, next_end - next_start)
+        else:
+            wait = max(1, min(self.chunk, self.total or self.chunk))
+        self.next_at = now + wait
         self.runner.telemetry.video(
             self.task.course_id, self.task.module_id, self.task.activity_id,
             self.task.upload_ids[0] if self.task.upload_ids else None, start, end,
@@ -182,7 +217,8 @@ class LaneJob:
             self.failed = True
             self.detail = self.detail or f"时间线走完，服务端只记到 {self.percent}%"
             return "failed"
-        self.next_at = now + max(1, end - start)
+        gap_start, gap_end = self.gaps[0]
+        self.next_at = now + max(1, min(self.chunk, gap_end - gap_start))
         return "progress"
 
     def _replan(self) -> bool:
@@ -217,6 +253,7 @@ def run_lanes(
     *,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
+    wait: Callable[[float], bool] | None = None,
     beat_seconds: float = 300.0,
     max_wait: float = 60.0,
 ) -> list:
@@ -255,13 +292,24 @@ def run_lanes(
     activate()
     while active:
         if cancel_requested():
+            # R09：取消是明确终态，在跑的和排队没开始的都要留痕
             runner.log.warning("收到停止请求，收尾退出（进度已写入 state）")
+            for job in list(active):
+                result = job.result(STATUS_PENDING)
+                results.append(result)
+                runner._record(result)
+            for task in pending:
+                result = _pending_result(task, "排队中未开始")
+                results.append(result)
+                runner._record(result)
+            pending.clear()
+            active.clear()
             break
         active.sort(key=lambda j: j.next_at)
         now = clock()
-        wait = active[0].next_at - now
-        if wait > 0:
-            sleep(min(max(wait, 0.01), max_wait))
+        delay = active[0].next_at - now
+        if delay > 0:
+            (wait or cancel_wait)(min(max(delay, 0.01), max_wait))
             continue
 
         due = [j for j in active if j.next_at <= now][:lanes]

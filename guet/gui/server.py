@@ -376,8 +376,27 @@ def api_start(state: AppState, body: dict) -> dict:
     if not 1 <= target <= 100:
         raise ConfigError("目标百分比必须在 1~100")
     lanes = body.get("lanes")
-    if lanes not in (None, "", "auto"):
+    if lanes in (None, ""):
+        lanes = None
+    elif str(lanes).strip().lower() in {"auto", "all", "max"}:
+        lanes = str(lanes).strip().lower()
+    else:
+        try:
+            lanes = int(str(lanes).strip())      # GUI 输入框给的是字符串（R04）
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(f"并行路数只接受数字、auto 或 all，收到 {lanes!r}") from exc
         _check_lanes(lanes, "并行路数")
+
+    # R11：支持按账号给计划总数 {name: n}，也兼容单个数字
+    raw_planned = body.get("planned")
+    planned: dict[str, int] = {}
+    try:
+        if isinstance(raw_planned, dict):
+            planned = {str(k): int(v) for k, v in raw_planned.items() if v is not None}
+        elif raw_planned not in (None, ""):
+            planned = {name: int(raw_planned) for name in names}
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"planned 必须是数字或 {{账号: 数字}}，收到 {raw_planned!r}") from exc
 
     accounts = []
     for name in names:
@@ -400,7 +419,7 @@ def api_start(state: AppState, body: dict) -> dict:
     cancel.reset()
     with state.lock:
         state.progress = {name: {"done": 0, "failed": 0, "pending": 0} for name in names}
-        state.planned = {name: int(body.get("planned") or 0) for name in names}
+        state.planned = {name: planned.get(name, 0) for name in names}
         state.events = []
         state.last_outcomes = []
 

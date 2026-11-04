@@ -428,13 +428,18 @@ def validate(app: AppConfig) -> None:
 
 
 def _check_lanes(value: Any, label: str) -> None:
+    """数字、数字字符串（GUI 输入框给的就是字符串，R04）、auto/all 都接受。"""
     if value is None:
         return
+    if isinstance(value, bool):
+        raise ConfigError(f"{label} 不能是布尔值")
     if isinstance(value, int):
-        if value < 0 or value > 256:
-            raise ConfigError(f"{label} 必须是 0~256 的整数，或 auto/all")
-        return
+        if 0 <= value <= 256:
+            return
+        raise ConfigError(f"{label} 必须是 0~256 的整数，或 auto/all")
     text = str(value).strip().lower()
     if text in {"auto", "all", "max"}:
+        return
+    if text.isdigit() and 0 <= int(text) <= 256:
         return
     raise ConfigError(f"{label} 只接受数字、auto 或 all，收到 {value!r}")

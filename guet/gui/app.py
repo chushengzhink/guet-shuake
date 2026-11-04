@@ -116,10 +116,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.no_window:
         print(url, flush=True)
         try:
-            while thread.is_alive():
-                time.sleep(0.5)
+            while thread.is_alive() and not state.shutdown.is_set():
+                state.shutdown.wait(0.5)
         except KeyboardInterrupt:
             pass
+        finally:
+            _shutdown(state, server)        # 这条分支也要走同样的清理
         return 0
 
     window = open_window(url, data_dir)
@@ -134,17 +136,25 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         pass
     finally:
-        from .. import cancel
-
-        cancel.request()
-        state.shutdown.set()
-        worker = state.run_thread
-        if worker is not None and worker.is_alive():
-            log.info("等待后台任务收尾……")
-            worker.join(timeout=8)          # 有界等待，不无限挂
-        server.shutdown()
-        log.info("已退出")
+        _shutdown(state, server)
     return 0
+
+
+def _shutdown(state: AppState, server) -> None:
+    """统一收尾：取消任务、等 worker、关服务（R10）。"""
+    from .. import cancel
+
+    cancel.request()
+    state.shutdown.set()
+    worker = state.run_thread
+    if worker is not None and worker.is_alive():
+        log.info("等待后台任务收尾……")
+        worker.join(timeout=8)              # 有界等待，不无限挂
+    try:
+        server.shutdown()
+    except Exception:  # pragma: no cover
+        pass
+    log.info("已退出")
 
 
 if __name__ == "__main__":

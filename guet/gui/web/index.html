@@ -327,8 +327,8 @@ async function login(name){
   }catch(e){ toast(e.message); }
 }
 async function loadCourses(){
-  const acc = state.accounts.find(a => a.logged_in) || state.accounts[0];
-  if (!acc) return toast('先添加账号');
+  const acc = currentAccount();
+  if (!acc || !acc.logged_in) return toast('先登录账号');
   $('courseHint').textContent = '正在读取课程…';
   try{
     const data = await api('/api/courses', {name: acc.name});
@@ -348,9 +348,24 @@ function toggleCourse(id){
   if (state.selected.has(id)) state.selected.delete(id); else state.selected.add(id);
   renderCourses();
 }
+function currentAccount(){
+  const picked = state.accounts.filter(a => state.picked.has(a.name) && a.logged_in);
+  if (picked.length) return picked[0];
+  return state.accounts.find(a => a.logged_in) || state.accounts[0];
+}
+
 function toggleAccount(name){
+  const before = currentAccount() ? currentAccount().name : null;
   if (state.picked.has(name)) state.picked.delete(name); else state.picked.add(name);
   renderAccounts();
+  const after = currentAccount() ? currentAccount().name : null;
+  if (before && after && before !== after) {
+    // R07：切换查看账号时课程必须跟着换，不能把 A 的课程交给 B
+    state.courses = [];
+    state.selected.clear();
+    renderCourses();
+    loadCourses();
+  }
 }
 
 function pickSpeed(id){
@@ -367,8 +382,9 @@ function pickSpeed(id){
 }
 
 async function bench(){
-  const acc = state.accounts.find(a => a.logged_in) || state.accounts[0];
-  if (!acc || !state.selected.size) return toast('先选账号和课程');
+  const acc = currentAccount();
+  if (!acc || !acc.logged_in) return toast('先登录账号');
+  if (!state.selected.size) return toast('先选课程');
   try{
     const data = await api('/api/bench', {name: acc.name, courses: [...state.selected]});
     $('lanes').value = data.lanes;
@@ -383,20 +399,23 @@ async function start(){
   if (!accounts.length) return toast('先勾选并登录账号');
   if (!state.selected.size) return toast('先选课程');
 
-  // 先问一次计划，拿到任务总数给进度条当分母
-  let planned = 0;
-  try{
-    const plan = await api('/api/plan', {name: accounts[0], courses: [...state.selected]});
-    planned = (plan.plans || []).reduce((sum, x) => sum + (x.videos || 0) + (x.materials || 0), 0);
-    if (planned) state.planned = Object.fromEntries(accounts.map(n => [n, planned]));
-  }catch(e){ /* 拿不到就用事件累计当分母 */ }
+  // R11：每个账号各查一次自己的剩余任务数，别拿首账号的分母套给别人
+  const target = Number($('target').value || 100);
+  const planned = {};
+  for (const name of accounts) {
+    try{
+      const plan = await api('/api/plan', {name, courses: [...state.selected], target});
+      planned[name] = (plan.plans || []).reduce((sum, x) => sum + (x.videos || 0) + (x.materials || 0), 0);
+    }catch(e){ planned[name] = 0; }
+  }
+  state.planned = planned;
 
   try{
     await api('/api/start', {
       accounts,
       courses: [...state.selected],
       speed: state.speed,
-      target: Number($('target').value || 100),
+      target,
       lanes: state.speed === 'realtime' ? $('lanes').value : null,
       planned,
     });

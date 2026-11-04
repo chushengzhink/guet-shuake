@@ -20,7 +20,9 @@ def run(server, tasks, chunk=100, target=100, interval=100, **kw):
     runner = FakeRunner(server)
     results = run_ticks(
         runner, tasks, chunk, target, interval,
-        clock=clock.now, sleep=clock.sleep, beat_seconds=0, **kw
+        clock=clock.now, sleep=clock.sleep,
+        wait=lambda t: (clock.sleep(t), False)[1],
+        beat_seconds=0, **kw
     )
     return runner, results, clock
 

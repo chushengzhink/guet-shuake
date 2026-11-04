@@ -19,6 +19,10 @@ class CancelToken:
     def reset(self) -> None:
         self._event.clear()
 
+    def wait(self, timeout: float) -> bool:
+        """等取消信号：被触发返回 True，超时返回 False（用于可中断的 sleep）。"""
+        return self._event.wait(timeout)
+
     @property
     def requested(self) -> bool:
         return self._event.is_set()
@@ -41,3 +45,8 @@ def request() -> None:
 
 def reset() -> None:
     _token.reset()
+
+
+def wait(timeout: float) -> bool:
+    """可中断等待：返回 True 表示期间收到了取消请求。"""
+    return _token.wait(timeout)

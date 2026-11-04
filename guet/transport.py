@@ -162,6 +162,10 @@ class HttpTransport(Transport):
         self._proxies = (
             {"http": rt.proxy, "https": rt.proxy} if rt.proxy else None
         )
+        self.session.headers.update({
+            "User-Agent": rt.user_agent,
+            "Accept-Language": "zh-CN,zh;q=0.9",
+        })
         self._import_cookies(cookies)
 
     def _import_cookies(self, cookies) -> None:
@@ -179,11 +183,6 @@ class HttpTransport(Transport):
                 path=item.get("path") or "/",
                 secure=bool(item.get("secure")),
             )
-        self.session.headers.update({
-            "User-Agent": rt.user_agent,
-            "Accept-Language": "zh-CN,zh;q=0.9",
-        })
-
     def _send(self, method, url, *, params, body, headers) -> HttpResult:
         resp = self.session.request(
             method,

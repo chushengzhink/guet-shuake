@@ -242,12 +242,13 @@ def _run_one_locked(
                 break
         outcome.after = _completeness(holder["client"], course_ids)
         outcome.requests = runner.request_count
-        outcome.ok = all(
+        # R03：任何课程异常都必须算失败，不能因为已收集的结果里「没有 failed」就报成功
+        outcome.ok = not outcome.error and all(
             r.status != STATUS_FAILED for items in outcome.results.values() for r in items
         )
         logger.info("结束：%s，成功 %d 失败 %d，%d 次请求",
-                    "全部成功" if outcome.ok else "有失败项", outcome.done, outcome.failed,
-                    outcome.requests)
+                    "全部成功" if outcome.ok else ("有失败项" if not outcome.error else "执行出错"),
+                    outcome.done, outcome.failed, outcome.requests)
         return outcome
     except (LoginRequired, SessionError) as exc:
         outcome.error = str(exc)
