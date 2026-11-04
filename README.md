@@ -87,19 +87,45 @@ python -m pip install -r requirements.txt       # playwright / requests / PyYAML
 python -m playwright install chromium           # 已装过会秒过
 ```
 
-## 4. 三步开刷
+## 4. 两种用法
+
+### 4.1 一键向导（推荐）
 
 ```powershell
-# 1) 配置
+python start.py
+```
+
+它会一路带你走完：检查 Chromium → 没有配置文件就现建 → 逐个账号检查会话（失效就弹浏览器让你登录一次）→ 自动拉「我的课程」并显示完成度 → 你按序号选课（`1` / `1,3` / `all`）→ 显示待处理内容与预计耗时 → 选节奏 → 开刷 → 打印汇总。
+
+```
+                                   我的课程
+┌─────┬──────────────────────┬────────────┬──────────┬───────────┬────────────┐
+│   # │ 课程                 │ 课程号     │       ID │ 完成/总数 │ 学习完整度 │
+├─────┼──────────────────────┼────────────┼──────────┼───────────┼────────────┤
+│   1 │ 基础工业工程（挑战… │ 2610082    │    29066 │     22/74 │      33.0% │
+└─────┴──────────────────────┴────────────┴──────────┴───────────┴────────────┘
+? 选课程（如 1 / 1,3 / all，回车=1）:
+                        待处理内容（进度以 acc01 为准）
+┌──────────────────┬──────┬────────────┬──────┬──────┬────────┬────────┬──────┐
+│ 课程             │ 视频 │ 视频总时长 │ 资料 │ 附件 │ 已完成 │ 需人工 │ 预计 │
+├──────────────────┼──────┼────────────┼──────┼──────┼────────┼────────┼──────┤
+│ 基础工业工程（… │   23 │      5h12m │   18 │   57 │     16 │      3 │ 10m  │
+└──────────────────┴──────┴────────────┴──────┴──────┴────────┴────────┴──────┘
+```
+
+`--yes` 全程用默认答案（全部账号、第一门课、normal、100%），适合挂着跑。想看向导长什么样又不想登录：`python tools/demo_wizard.py`（假服务端演示）。
+
+### 4.2 分步 CLI（想精确控制时）
+
+```powershell
 Copy-Item config.example.yaml   config.yaml
 Copy-Item accounts.example.yaml accounts.yaml   # 至少一个 enabled: true 的账号
 
-# 2) 登录一次（会弹浏览器，CAS 扫码/账号密码都行；登录态落在 profiles/<账号名>/）
-python run.py login --all
-
-# 3) 开刷（先 dry-run 看计划）
-python run.py run --all --dry-run
-python run.py run --all --speed normal
+python run.py login --all                       # 登录一次（会弹浏览器）
+python run.py status                            # 看会话与完整度
+python run.py probe --account acc01 --activity 92918   # 探针，选节奏
+python run.py run --all --dry-run               # 看计划
+python run.py run --all --speed normal          # 开刷
 ```
 
 跑完会自动打印汇总表，并写 `data/result.json`（含每个活动的 status、百分比、请求数、耗时）。
@@ -148,6 +174,16 @@ accounts:
 
 `config.yaml` 里只要写了 `gap_seconds`，就会**覆盖所有档位的段间隔**（不写则用上表默认值）。
 
+按课程 29066 的实际内容（23 个视频共 5h12m + 18 个资料 57 个附件）实测估算，**单账号**：
+
+| speed | 预计耗时 | 请求数 |
+|---|---|---|
+| `probe` | ≈4 分钟 | ~100 |
+| `normal` | ≈10 分钟 | ~300 |
+| `human` | ≈30 分钟 | ~300（间隔长） |
+
+多账号并行时总耗时 ≈ 最慢的那个账号；`--per-account-jobs 3` 可再压到 1/3 左右。
+
 单账号 `normal` 大约 **5~10 分钟**（≈180 次请求）；`--per-account-jobs 3` 约 3 分钟。
 
 先探针再决定档位：
@@ -191,17 +227,19 @@ python run.py run    [--all | --account acc01] [--course 29066] [--only 92918,92
 | `profile 正在被进程 N 使用` | 关了占用该 profile 的浏览器/另一个本工具进程，或删 `profiles/<名字>/.lock` |
 | 全部上报都没让百分比上涨 | 用 `human` 档；仍不动就说明课程端有额外限制，此时 `probe` 的 `steps` 会显示每次的 before/after |
 | 403 / 419 频繁 | 降 `--rps`、改 `human`、减少 `--account-jobs` |
-| 找不到 Chromium | `python -m playwright install chromium` |
+| 找不到 Chromium | `python -m playwright install chromium`（工具也会自动退到本机已有的 `ms-playwright/chromium-*`，只打一条 INFO） |
 
 ## 11. 目录
 
 ```
+start.py               一键向导（登录 → 选课 → 开刷）
 run.py                 命令行入口（login / status / list / probe / run）
 config.example.yaml    全局配置模板
 accounts.example.yaml  多账号模板
 guet/
+  wizard.py            向导流程（选账号 / 选课 / 选节奏 / 汇总）
   config.py            配置与账号清单
-  browser.py           Chromium 生命周期、并发槽、profile 锁
+  browser.py           Chromium 生命周期、并发槽、profile 锁、版本回退
   session.py           登录、cookie 导出、按引擎开传输层
   transport.py         统一请求接口（requests / context.request）
   client.py            TronClass 接口封装
@@ -215,21 +253,24 @@ guet/
 tools/
   har_analyze.py       HAR 分析 / 样例抽取 / fixtures 导出
   probe.py             独立探针
+  demo_wizard.py       离线演示向导（假服务端）
 tests/
   test_offline.py      离线自测（16 项，不需要账号）
   test_integration.py  全链路自测（3 项，假传输层）
+  test_wizard.py       向导自测（10 项）
   fixtures/            从 HAR 导出的真实响应
 ```
 
 ## 12. 测试
 
 ```powershell
-python -m unittest discover -s tests -v     # 19 项全绿，纯离线
+python -m unittest discover -s tests -v     # 29 项全绿，纯离线
 ```
 
 覆盖：
 * `test_offline.py`（16 项）——区间数学、活动规划（对着真实 fixtures 校验 30/18/12 分布）、视频状态机（整段/分段/服务端限跨度时自动降档/服务端完全不理会时快速失败）、资料状态机、配置校验。
 * `test_integration.py`（3 项）——用假传输层把 `scheduler → runner → client` 全链路跑通：41 个待办活动全部刷到 100%、埋点被调用、`state.acc01.json` 正常落盘、dry-run 不发写请求、坏账号不影响好账号。
+* `test_wizard.py`（10 项）——选择解析、耗时估算、`accounts.yaml` 自动生成，以及用脚本化答案把整个 `start.py` 流程跑一遍（含中途取消、`--yes` 默认路径）。
 
 重新分析抓包 / 导出 fixtures：
 

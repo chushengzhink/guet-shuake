@@ -107,6 +107,22 @@ class FakeTransport:
             return HttpResult(200, path, json.dumps(fixture("modules.json")))
         if clean == f"/api/courses/{COURSE}":
             return HttpResult(200, path, json.dumps(fixture("course_meta.json")))
+        if clean == "/api/my-courses":
+            return HttpResult(200, path, json.dumps({"courses": [{
+                "id": COURSE,
+                "name": "基础工业工程",
+                "display_name": "基础工业工程（挑战性学习课程）-2610082",
+                "course_code": "2610082",
+                "course_avg_completeness": 28.11,
+            }]}))
+        if clean == "/api/my-semesters":
+            return HttpResult(200, path, json.dumps({"semesters": [
+                {"id": 14, "academic_year_id": 5, "is_active": True, "name": "2026-2027第1学期"},
+            ]}))
+        if clean == "/api/my-academic-years":
+            return HttpResult(200, path, json.dumps({"academic_years": [
+                {"id": 5, "is_active": True, "name": "2026-2027"},
+            ]}))
         if clean == f"/api/course/{COURSE}/my-completeness":
             return HttpResult(200, path, json.dumps(fixture("my_completeness.json")))
         if clean == f"/api/course/{COURSE}/activity-reads-for-user":

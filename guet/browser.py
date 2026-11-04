@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -48,6 +49,49 @@ def browser_slot() -> Iterator[None]:
         sem.release()
 
 
+def _browsers_root() -> Path:
+    env = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if env:
+        return Path(env)
+    local = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_CACHE_HOME") or str(Path.home())
+    if os.name == "nt":
+        return Path(local) / "ms-playwright"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Caches" / "ms-playwright"
+    return Path(local) / "ms-playwright"
+
+
+def resolve_chromium(pw: Playwright) -> tuple[str | None, str]:
+    """返回 (要显式指定的 executable_path 或 None, 描述)。
+
+    Playwright 版本与已装浏览器版本对不上时（例如 pip 里是 1.51 要 chromium-1161，
+    本机只有 chromium-1234），自动退到本机已有的那份 Chromium，省一次 150 MB 下载。
+    """
+    expected = ""
+    try:
+        expected = pw.chromium.executable_path or ""
+    except Exception:  # pragma: no cover
+        expected = ""
+    if expected and Path(expected).exists():
+        return None, expected
+
+    root = _browsers_root()
+    patterns = [
+        "chromium-*/chrome-win64/chrome.exe",   # 新版目录名
+        "chromium-*/chrome-win/chrome.exe",     # 旧版目录名
+        "chromium-*/chrome-linux/chrome",
+        "chromium-*/chrome-mac/Chromium.app/Contents/MacOS/Chromium",
+    ]
+    candidates: list[Path] = []
+    for pattern in patterns:
+        candidates.extend(sorted(root.glob(pattern)))
+    if candidates:
+        chosen = candidates[-1]
+        log.info("Playwright 期望的 Chromium 不存在（%s），改用本机已有的 %s", expected or "-", chosen)
+        return str(chosen), str(chosen)
+    return None, expected or str(root)
+
+
 def start_playwright() -> Playwright:
     try:
         return sync_playwright().start()
@@ -76,6 +120,9 @@ def launch_context(pw: Playwright, profile_dir: Path, rt: RuntimeConfig, headles
     )
     if rt.proxy:
         kwargs["proxy"] = {"server": rt.proxy}
+    executable, _ = resolve_chromium(pw)
+    if executable:
+        kwargs["executable_path"] = executable
     try:
         ctx = pw.chromium.launch_persistent_context(**kwargs)
     except Exception as exc:  # pragma: no cover - 环境相关

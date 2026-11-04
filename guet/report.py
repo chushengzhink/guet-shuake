@@ -31,6 +31,11 @@ ACTION_STYLE = {
 }
 
 
+def console():
+    """返回 rich Console（没有 rich 时返回 None，调用方自行降级）。"""
+    return _CONSOLE
+
+
 def _plain(msg: str) -> None:
     print(msg)
 
