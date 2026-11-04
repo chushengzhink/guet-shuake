@@ -21,7 +21,7 @@ from .runner import (
 )
 from .session import LoginRequired, SessionError, open_transport
 from .transport import Transport, TransportError
-from .util import TokenBucket, atomic_write_json, human_seconds, read_json, setup_logger
+from .util import LockBusy, TokenBucket, atomic_write_json, human_seconds, read_json, run_lock, setup_logger
 
 log = setup_logger("scheduler")
 
@@ -32,11 +32,18 @@ class CourseCache:
     def __init__(self, path: Path, ttl: int = 1800) -> None:
         self.path = path
         self.ttl = max(60, int(ttl))
-        self._lock = threading.Lock()
+        self._locks_guard = threading.Lock()
+        self._course_locks: dict[str, threading.Lock] = {}
+        self._save_lock = threading.Lock()
         self._data: dict[str, Any] = read_json(path, default={}) or {}
 
+    def _lock_for(self, key: str) -> threading.Lock:
+        with self._locks_guard:
+            return self._course_locks.setdefault(key, threading.Lock())
+
     def bundle(self, cid: int, client: TronClassClient) -> dict:
-        with self._lock:
+        # 按课程加锁：不同课程可以并行加载，同一课程只拉一次
+        with self._lock_for(str(cid)):
             entry = self._data.get(str(cid)) or {}
             if entry.get("activities") and time.time() - float(entry.get("ts") or 0) < self.ttl:
                 return entry
@@ -53,22 +60,32 @@ class CourseCache:
                 "modules": client.modules(cid),
             }
             self._data[str(cid)] = data
-            try:
-                atomic_write_json(self.path, self._data)
-            except Exception:  # pragma: no cover
-                pass
+            with self._save_lock:
+                try:
+                    atomic_write_json(self.path, self._data)
+                except Exception:  # pragma: no cover
+                    pass
             return data
 
     def invalidate(self, cid: int | None = None) -> None:
-        with self._lock:
+        keys = [str(cid)] if cid is not None else list(self._data)
+        with self._locks_guard:
+            locks = [self._course_locks.setdefault(key, threading.Lock()) for key in keys]
+        for lock in locks:
+            lock.acquire()
+        try:
             if cid is None:
                 self._data.clear()
             else:
                 self._data.pop(str(cid), None)
-            try:
-                atomic_write_json(self.path, self._data)
-            except Exception:  # pragma: no cover
-                pass
+            with self._save_lock:
+                try:
+                    atomic_write_json(self.path, self._data)
+                except Exception:  # pragma: no cover
+                    pass
+        finally:
+            for lock in reversed(locks):
+                lock.release()
 
 
 @dataclass
@@ -131,6 +148,25 @@ def _completeness(client: TronClassClient, course_ids: Sequence[int]) -> dict[in
 
 
 def run_one(
+    app: AppConfig,
+    account: AccountConfig,
+    cache: CourseCache,
+    global_limiter: TokenBucket | None,
+    only: set[int] | None = None,
+    dry_run: bool = False,
+) -> AccountOutcome:
+    """带账号级运行锁的入口：同一账号同时只允许一个进程在刷。"""
+    lock_path = app.state_path(account).with_suffix(".run.lock")
+    try:
+        with run_lock(lock_path):
+            return _run_one_locked(app, account, cache, global_limiter, only, dry_run)
+    except LockBusy as exc:
+        log.error("账号 %s 已在另一个进程里运行：%s", account.name, exc)
+        return AccountOutcome(account=account.name, ok=False,
+                              error=f"另一个进程正在刷这个账号（{exc}）")
+
+
+def _run_one_locked(
     app: AppConfig,
     account: AccountConfig,
     cache: CourseCache,

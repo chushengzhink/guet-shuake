@@ -17,7 +17,7 @@ from typing import Iterator
 from playwright.sync_api import BrowserContext, Playwright, sync_playwright
 
 from .config import RuntimeConfig
-from .util import setup_logger
+from .util import LockBusy, run_lock, setup_logger
 
 log = setup_logger("browser")
 
@@ -144,56 +144,10 @@ def launch_context(pw: Playwright, profile_dir: Path, rt: RuntimeConfig, headles
 def profile_lock(profile_dir: Path) -> Iterator[None]:
     """同一 profile 只允许一个进程使用（Chromium 自己也会锁，这里给个更清楚的报错）。"""
     profile_dir.mkdir(parents=True, exist_ok=True)
-    lock_path = profile_dir / ".lock"
-    if lock_path.exists():
-        try:
-            age = time.time() - lock_path.stat().st_mtime
-        except OSError:
-            age = 0
-        pid_text = ""
-        try:
-            pid_text = lock_path.read_text(encoding="utf-8").strip()
-        except OSError:
-            pass
-        pid = int(pid_text) if pid_text.isdigit() else 0
-        if age < LOCK_TTL_SECONDS and pid and _pid_alive(pid):
-            raise BrowserUnavailable(
-                f"profile 正在被进程 {pid} 使用（{lock_path}）；确认没有别的实例在跑后删掉该文件再试"
-            )
-        log.warning("清理残留 profile 锁：%s", lock_path)
-        try:
-            lock_path.unlink()
-        except OSError:
-            pass
     try:
-        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        os.write(fd, str(os.getpid()).encode())
-        os.close(fd)
-    except FileExistsError as exc:  # pragma: no cover - 竞态
-        raise BrowserUnavailable(f"无法获取 profile 锁：{lock_path}") from exc
-    try:
-        yield
-    finally:
-        try:
-            lock_path.unlink()
-        except OSError:
-            pass
-
-
-def _pid_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    if os.name == "nt":
-        import ctypes
-
-        kernel32 = ctypes.windll.kernel32
-        handle = kernel32.OpenProcess(0x1000, False, pid)
-        if not handle:
-            return False
-        kernel32.CloseHandle(handle)
-        return True
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
+        with run_lock(profile_dir / ".lock"):
+            yield
+    except LockBusy as exc:
+        raise BrowserUnavailable(
+            f"profile 正在被使用：{exc}；确认没有别的实例在跑后，删掉该 .lock 再试"
+        ) from exc

@@ -149,11 +149,16 @@ class LaneJob:
         """时间线走到头了吗？走完但服务端没给满就按缺口补一轮。"""
         if self.cursor < self.total:
             return "progress"
-        self.rounds += 1
         if self.percent >= self.target:
             self.done = True
             return "done"
-        if self.rounds > 2 or not self._replan():
+        self.rounds += 1
+        refreshed = self._replan()
+        # 复查可能把 percent 抬到 100（state=full），所以要在 replan 之后再判一次
+        if self.percent >= self.target:
+            self.done = True
+            return "done"
+        if self.rounds > 2 or not refreshed:
             self.failed = True
             self.detail = self.detail or f"时间线走完，服务端只记到 {self.percent}%"
             return "failed"

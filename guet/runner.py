@@ -213,7 +213,9 @@ class VideoJob:
             self._degrade()
             return "progress"
 
-        start, end = self.pieces.pop(0)
+        # 注意：这里只「查看」不「取出」。会话失效会被 _guard 重建后重试同一个 step()，
+        # 若先 pop 就会把这一段（或这个附件）丢掉。
+        start, end = self.pieces[0]
         before_percent = self.percent
         before_covered = covered_seconds(self.ranges)
         self.runner.request_count += 1
@@ -251,6 +253,9 @@ class VideoJob:
         if has_ranges:
             self.ranges = merge_ranges(data["ranges"])
         self._update_percent(new_percent)
+        # 请求成功返回后才推进队列（SessionExpired 时队列保持原样，重试不会丢段）
+        if self.pieces and self.pieces[0] == (start, end):
+            self.pieces.pop(0)
 
         progressed = (
             self.percent > before_percent
@@ -369,7 +374,8 @@ class MaterialJob:
             self.detail = f"停在 {self.percent}%（附件都点过了但服务端没给满）"
             return "failed"
 
-        upload_id = self.pending.pop(0)
+        # 同理：先不取出，等请求成功后再 pop，会话重试时不会跳过这个附件
+        upload_id = self.pending[0]
         self.runner.request_count += 1
         try:
             resp = self.runner.client.report_upload(self.task.activity_id, upload_id, self.task.course_id)
@@ -380,6 +386,8 @@ class MaterialJob:
             self.detail = f"upload {upload_id} 上报失败：{exc}"
             return "failed"
 
+        if self.pending and self.pending[0] == upload_id:
+            self.pending.pop(0)
         self.sent += 1
         percent = _video_percent(resp)
         if percent is not None:

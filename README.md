@@ -227,6 +227,15 @@ python run.py run --all --speed realtime --lanes all       # 有多少视频开�
 
 实测参考（校园网关 RTT ≈335ms，21 个视频共 4h53m）：省心 3 路 ≈ 1h37m、推荐 5 路 ≈ 59m、极速 16 路 ≈ 20m（被最长单个视频 19m54s 卡住）。
 
+### 运行约束与已知行为
+
+* **同一账号同时只允许一个进程**：`data/state.<账号>.run.lock` 是 pid 锁，第二个进程会直接报「已在另一个进程里运行」并退出码 1，不会把会话和 state 写乱。
+* **浏览器引擎不支持跨线程**：Playwright 的 sync API 绑定创建线程，`--engine browser` 下 `--lane-threads` 会被强制回 1 并打警告（`http` 引擎不受影响）。
+* **两个引擎走同一出口**：`config.yaml` 里配了 `proxy` 就同时作用于 requests（显式 `session.proxies`，优先级高于 `HTTP(S)_PROXY` 环境变量）和 Chromium。
+* **浏览器响应及时释放**：`context.request` 拿到的 `APIResponse` 读完字段立刻 `dispose()`，长时间 tick/realtime 不会累积。
+* **命令行覆盖后会重新校验**：`--target 101`、`--lanes -1` 这类会在进入执行前被拒（退出码 1）。
+* **计划任务带全路径**：生成的 `tick-<账号>.bat` 会带上实际的 `--config` / `--accounts` 绝对路径，不会悄悄回落到默认文件。
+
 ### 定时任务（tick 档：单线程 + 固定节拍）
 
 不搞多线程、不搞独立时间线，就一个循环：每 120 秒醒一次，把所有没看完的视频各推一段，然后睡回去。

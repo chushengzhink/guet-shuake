@@ -23,6 +23,16 @@ from .util import human_seconds
 STATUS_PENDING = "pending"
 
 
+def effective_threads(runner, threads: int) -> int:
+    """浏览器引擎的 Playwright 对象绑定创建线程，跨线程调用会崩，强制串行。"""
+    threads = max(1, int(threads))
+    engine = getattr(getattr(getattr(runner, "client", None), "transport", None), "engine", "")
+    if threads > 1 and engine == "browser":
+        runner.log.warning("浏览器引擎（browser）不支持跨线程请求，lane-threads 已强制回 1")
+        return 1
+    return threads
+
+
 def _safe_step(job: LaneJob) -> str:
     """并发模式下兜住异常：会话失效等无法安全重试的，直接标记失败。"""
     try:
@@ -54,7 +64,7 @@ def run_ticks(
     threads>1 时同一轮内的多个上报并发发出（同账号并发写有顶号风险，默认 1）。
     """
     lanes = max(0, int(lanes))
-    threads = max(1, int(threads))
+    threads = effective_threads(runner, threads)
     interval = max(0.0, float(interval))
     chunk = max(1, min(int(chunk), int(getattr(runner, "max_span", SERVER_MAX_SPAN_DEFAULT))))
 

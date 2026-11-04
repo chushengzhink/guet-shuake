@@ -103,8 +103,12 @@ class WizardFlowTest(unittest.TestCase):
             wizard.session.cookies_from_profile,
             scheduler.make_client,
             scheduler.run_all,
+            wizard.browser_ready,
         )
 
+        # 别让测试真的去启动 Chromium：既慢，退出时还会留 Playwright 的
+        # "Task was destroyed / TargetClosedError" 噪音
+        wizard.browser_ready = lambda: (True, "test-chromium")  # type: ignore[assignment]
         wizard.session.cookies_from_profile = lambda app, acc: {"session": "x"}  # type: ignore[assignment]
 
         def fake_make_client(app, account, limiter, global_limiter):
@@ -125,7 +129,8 @@ class WizardFlowTest(unittest.TestCase):
         scheduler.run_all = fake_run_all  # type: ignore[assignment]
 
     def tearDown(self):
-        (wizard.session.cookies_from_profile, scheduler.make_client, scheduler.run_all) = self._orig
+        (wizard.session.cookies_from_profile, scheduler.make_client,
+         scheduler.run_all, wizard.browser_ready) = self._orig
         shutdown_loggers()
         self.tmp.cleanup()
 

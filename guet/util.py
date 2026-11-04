@@ -9,8 +9,10 @@ import random
 import sys
 import threading
 import time
+import uuid
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Iterator, Sequence
 
 LOG_FORMAT = "%(asctime)s %(levelname)-7s [%(name)s] %(message)s"
 
@@ -58,10 +60,32 @@ def shutdown_loggers() -> None:
 
 
 def atomic_write_json(path: Path, data: Any) -> None:
+    """原子写 JSON；临时文件带 pid/线程/uuid，多进程并发也不会互相踩。
+
+    Windows 上 os.replace 撞到杀软/索引器临时占用时会抛 PermissionError，
+    这里做几次短退避重试（实测多线程并发写同一文件时确实会碰到）。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
+    tmp = path.with_name(
+        f".{path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex[:8]}.tmp"
+    )
+    payload = json.dumps(data, ensure_ascii=False, indent=2)
+    try:
+        tmp.write_text(payload, encoding="utf-8")
+        for attempt in range(6):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                if attempt == 5:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
 
 def read_json(path: Path, default: Any = None) -> Any:
@@ -115,6 +139,70 @@ class AtomicCounter:
         with self._lock:
             self.value += n
             return self.value
+
+
+class LockBusy(RuntimeError):
+    """锁已被另一个进程持有。"""
+
+
+def pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, pid)
+        if not handle:
+            return False
+        kernel32.CloseHandle(handle)
+        return True
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+@contextmanager
+def run_lock(path: Path, ttl_seconds: int = 6 * 3600) -> Iterator[None]:
+    """进程级独占锁（pid 文件）：同一账号/同一 profile 只允许一个进程在跑。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        age = 0.0
+        try:
+            age = time.time() - path.stat().st_mtime
+        except OSError:
+            pass
+        pid = 0
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+            pid = int(text) if text.isdigit() else 0
+        except OSError:
+            pass
+        if age < ttl_seconds and pid_alive(pid):
+            raise LockBusy(f"已被进程 {pid} 占用（{path}）")
+        try:
+            path.unlink()
+        except OSError:
+            pass
+    try:
+        fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError as exc:  # pragma: no cover - 竞态
+        raise LockBusy(f"无法获取锁（{path}）") from exc
+    try:
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+        yield
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            path.unlink()
+        except OSError:
+            pass
 
 
 def human_seconds(seconds: float) -> str:

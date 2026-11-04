@@ -158,6 +158,9 @@ class HttpTransport(Transport):
                  limiter: TokenBucket | None = None):
         super().__init__(rt, limiter)
         self.session = requests.Session()
+        if rt.proxy:
+            # 显式设置会覆盖 HTTP(S)_PROXY 环境变量，保证两个引擎走同一个出口
+            self.session.proxies.update({"http": rt.proxy, "https": rt.proxy})
         if cookies:
             for name, value in cookies.items():
                 self.session.cookies.set(name, value)
@@ -202,11 +205,22 @@ class BrowserTransport(Transport):
         else:
             resp = api.fetch(full, method=method, headers=headers, data=body,
                              timeout=int(self.rt.timeout * 1000))
+        # APIResponse 会占着请求上下文里的资源，取完字段立刻 dispose，
+        # 否则 tick/realtime 这种长时间运行会一直累积。
         try:
-            text = resp.text()
-        except Exception:  # 204 之类无正文
-            text = ""
-        return HttpResult(resp.status, resp.url, text, dict(resp.headers))
+            status = resp.status
+            final_url = resp.url
+            resp_headers = dict(resp.headers)
+            try:
+                text = resp.text()
+            except Exception:  # 204 之类无正文
+                text = ""
+        finally:
+            try:
+                resp.dispose()
+            except Exception:  # pragma: no cover
+                pass
+        return HttpResult(status, final_url, text, resp_headers)
 
     def cookies(self) -> dict[str, str]:
         return {c["name"]: c["value"] for c in self.context.cookies()}

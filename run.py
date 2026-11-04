@@ -23,7 +23,7 @@ from guet import report, scheduler, session  # noqa: E402
 from guet.benchmark import measure, plan_scale, recommend  # noqa: E402
 from guet.browser import BrowserUnavailable, configure_slots  # noqa: E402
 from guet.client import SessionExpired, TronClassError  # noqa: E402
-from guet.config import AppConfig, ConfigError, load_config  # noqa: E402
+from guet.config import AppConfig, ConfigError, load_config, validate  # noqa: E402
 from guet.planner import build_plan  # noqa: E402
 from guet.probe import probe_activity  # noqa: E402
 from guet.session import LoginRequired, SessionError  # noqa: E402
@@ -290,12 +290,19 @@ def cmd_schedule(app: AppConfig, args) -> int:
     log = app.root / app.runtime.state_dir / "logs" / f"tick-{account.name}.log"
     log.parent.mkdir(parents=True, exist_ok=True)
 
+    cfg_parts = []
+    if app.config_path:
+        cfg_parts.append(f'--config "{app.config_path}"')
+    if app.accounts_path:
+        cfg_parts.append(f'--accounts "{app.accounts_path}"')
+    cfg_args = (" " + " ".join(cfg_parts)) if cfg_parts else ""
+
     body = "\r\n".join([
         "@echo off",
         # bat 用 GBK 存，这里先把代码页钉回 936，否则中文路径会被按 UTF-8 解成乱码
         "chcp 936 >nul",
         f'cd /d "{app.root}"',
-        f'"{sys.executable}" "{ROOT / "run.py"}" run --account {account.name} '
+        f'"{sys.executable}" "{ROOT / "run.py"}"{cfg_args} run --account {account.name} '
         f'--speed tick --once >> "{log}" 2>&1',
         "",
     ])
@@ -330,6 +337,8 @@ def cmd_run(app: AppConfig, args) -> int:
     report.write_result(app.result_path(), outcomes)
     if all(o.ok for o in outcomes):
         return EXIT_OK
+    if all(not o.ok and "另一个进程" in o.error for o in outcomes):
+        return EXIT_ERROR
     if all(not o.ok and ("会话" in o.error or "login" in o.error) for o in outcomes):
         return EXIT_NO_SESSION
     return EXIT_PARTIAL
@@ -345,7 +354,12 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         log.error("配置错误：%s", exc)
         return EXIT_ERROR
-    apply_overrides(app, args)
+    try:
+        apply_overrides(app, args)
+        validate(app)          # 命令行覆盖后必须重新校验，否则 --target 101 之类能溜进去
+    except ConfigError as exc:
+        log.error("配置错误：%s", exc)
+        return EXIT_ERROR
 
     handlers = {
         "login": cmd_login,
