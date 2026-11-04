@@ -18,6 +18,7 @@ from typing import Callable, Sequence
 
 from .client import SERVER_MAX_SPAN_DEFAULT
 from .realtime import STATUS_DONE, STATUS_FAILED, LaneJob
+from .cancel import requested as cancel_requested
 from .util import human_seconds
 
 STATUS_PENDING = "pending"
@@ -98,6 +99,9 @@ def run_ticks(
     )
 
     while active:
+        if cancel_requested():
+            runner.log.warning("收到停止请求，收尾退出（进度已写入 state）")
+            break
         batch = list(active)
         if threads > 1 and len(batch) > 1:
             with ThreadPoolExecutor(max_workers=min(threads, len(batch))) as pool:

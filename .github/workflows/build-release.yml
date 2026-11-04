@@ -1,0 +1,87 @@
+name: build-release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号（不带 v），例如 1.0.0"
+        required: true
+        default: "1.0.0"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安装依赖
+        run: |
+          python -m pip install -r requirements.txt pyinstaller
+          python -m playwright install chromium
+
+      - name: 跑测试
+        run: python -m unittest discover -s tests -q
+
+      - name: 准备内置浏览器
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:LOCALAPPDATA 'ms-playwright'
+          $src = Get-ChildItem $root -Directory -Filter 'chromium-*' |
+                 Sort-Object Name -Descending | Select-Object -First 1
+          New-Item -ItemType Directory -Force 'packaging\browsers' | Out-Null
+          Copy-Item $src.FullName (Join-Path 'packaging\browsers' $src.Name) -Recurse
+          Write-Host "内置浏览器：$($src.Name)"
+
+      - name: 解析版本号
+        id: ver
+        shell: pwsh
+        run: |
+          $v = if ('${{ github.event_name }}' -eq 'workflow_dispatch') {
+            '${{ github.event.inputs.version }}'
+          } else {
+            '${{ github.ref_name }}' -replace '^v', ''
+          }
+          "value=$v" >> $env:GITHUB_OUTPUT
+
+      - name: 安装 Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: 构建 full + lite
+        shell: powershell
+        run: |
+          powershell -ExecutionPolicy Bypass -File packaging\build.ps1 `
+            -Variant both -Version ${{ steps.ver.outputs.value }}
+
+      - name: 收集产物
+        shell: pwsh
+        run: |
+          Get-ChildItem packaging\output\*.exe | Select-Object Name, Length | Format-Table
+          foreach ($f in Get-ChildItem packaging\output\*.exe) {
+            "{0}  {1:N1} MB" -f $f.Name, ($f.Length / 1MB)
+          }
+
+      - name: 发布 Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: packaging/output/*.exe
+          generate_release_notes: true
+          body: |
+            ## 下载哪个版本
+
+            | 版本 | 适合谁 |
+            |---|---|
+            | **full**（体积大） | 推荐：内置浏览器内核，装完即用，不依赖系统装了什么 |
+            | **lite**（体积小） | 电脑里有 Microsoft Edge（Windows 10/11 默认自带） |
+
+            两个版本功能一致。卸载不会删除账号、登录状态和刷课进度（保存在 `%LOCALAPPDATA%\GuetShuake`）。

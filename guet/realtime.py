@@ -25,6 +25,7 @@ from .client import (
 )
 from .progress import complement, merge_ranges
 from .transport import TransportError
+from .cancel import requested as cancel_requested
 from .util import human_seconds
 
 STATUS_DONE = "done"
@@ -238,6 +239,9 @@ def run_lanes(
 
     activate()
     while active:
+        if cancel_requested():
+            runner.log.warning("收到停止请求，收尾退出（进度已写入 state）")
+            break
         active.sort(key=lambda j: j.next_at)
         now = clock()
         wait = active[0].next_at - now

@@ -154,12 +154,13 @@ def run_one(
     global_limiter: TokenBucket | None,
     only: set[int] | None = None,
     dry_run: bool = False,
+    on_result=None,
 ) -> AccountOutcome:
     """带账号级运行锁的入口：同一账号同时只允许一个进程在刷。"""
     lock_path = app.state_path(account).with_suffix(".run.lock")
     try:
         with run_lock(lock_path):
-            return _run_one_locked(app, account, cache, global_limiter, only, dry_run)
+            return _run_one_locked(app, account, cache, global_limiter, only, dry_run, on_result)
     except LockBusy as exc:
         log.error("账号 %s 已在另一个进程里运行：%s", account.name, exc)
         return AccountOutcome(account=account.name, ok=False,
@@ -173,6 +174,7 @@ def _run_one_locked(
     global_limiter: TokenBucket | None,
     only: set[int] | None = None,
     dry_run: bool = False,
+    on_result=None,
 ) -> AccountOutcome:
     started = time.time()
     outcome = AccountOutcome(account=account.name, ok=False)
@@ -205,6 +207,7 @@ def _run_one_locked(
             limiter=limiter,
             state=StateStore(app.state_path(account), account.name),
             bundle_provider=bundle_provider,
+            on_result=on_result,
         )
         course_ids = list(account.course_ids) or _discover_courses(client, account)
         if not course_ids:
@@ -261,6 +264,7 @@ def run_all(
     accounts: Sequence[AccountConfig],
     only: set[int] | None = None,
     dry_run: bool = False,
+    on_result=None,
 ) -> list[AccountOutcome]:
     configure_slots(app.runtime.max_browser_contexts)
     cache = CourseCache(app.course_cache_path(), app.runtime.course_cache_ttl)
@@ -272,7 +276,7 @@ def run_all(
     outcomes: list[AccountOutcome] = []
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="acc") as pool:
         futures = {
-            pool.submit(run_one, app, acc, cache, global_limiter, only, dry_run): acc
+            pool.submit(run_one, app, acc, cache, global_limiter, only, dry_run, on_result): acc
             for acc in accounts
         }
         for future in as_completed(futures):

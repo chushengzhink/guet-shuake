@@ -1,0 +1,543 @@
+"""GUI 后端：127.0.0.1 上的小型 HTTP 服务 + JSON API。
+
+界面是一个单文件 HTML（`web/index.html`），交给系统 Edge 以 `--app` 模式打开，
+所以 UI 由真正的浏览器渲染，Python 这边只负责 JSON。
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import secrets
+import sys
+import threading
+import time
+import traceback
+from collections import deque
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, urlparse
+
+from .. import cancel, scheduler, session
+from ..benchmark import measure, plan_scale, recommend
+from ..browser import BrowserUnavailable, find_edge_exe
+from ..client import SessionExpired, TronClassError
+from ..config import AppConfig, ConfigError, load_config
+from ..planner import ACTION_MATERIAL, ACTION_VIDEO, build_plan
+from ..runner import resolve_lanes
+from ..session import LoginRequired, SessionError
+from ..transport import TransportError
+from ..util import TokenBucket, setup_logger
+from ..wizard import describe_plan
+
+log = setup_logger("gui")
+
+CONFIG_TEMPLATE = """\
+# GUET 畅课助手 · 配置文件（GUI 会自动维护，也可手改）
+base_url: https://courses.guet.edu.cn
+engine: http
+browser_channel: auto      # auto = 优先系统 Edge，其次 Chrome，最后内置 Chromium
+speed: normal
+chunk_seconds: 120
+target_percent: 100
+telemetry: true
+realtime_lanes: auto
+account_jobs: 1
+per_account_jobs: 1
+rps: 3.0
+global_rps: 8.0
+"""
+
+ACCOUNTS_TEMPLATE = """\
+defaults:
+  course_ids: []
+  speed: normal
+  target_percent: 100
+  engine: http
+  realtime_lanes: auto
+
+accounts: []
+"""
+
+
+def web_index() -> Path:
+    """打包后前端在 _MEIPASS/guet/gui/web 下。"""
+    if hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS) / "guet" / "gui" / "web" / "index.html"
+    return Path(__file__).resolve().parent / "web" / "index.html"
+
+
+class _LogHandler(logging.Handler):
+    def __init__(self, state: "AppState") -> None:
+        super().__init__()
+        self.state = state
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            message = record.getMessage()
+        except Exception:  # pragma: no cover
+            message = str(record.msg)
+        self.state.push_log(record.levelname, record.name, message)
+
+
+class AppState:
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.config_path = root / "config.yaml"
+        self.accounts_path = root / "accounts.yaml"
+        self.token = secrets.token_urlsafe(18)
+        self.lock = threading.Lock()
+        self.logs: deque[dict[str, Any]] = deque(maxlen=4000)
+        self.log_seq = 0
+        self.status = "idle"          # idle / logging-in / running / stopping
+        self.error = ""
+        self.events: list[dict[str, Any]] = []
+        self.progress: dict[str, dict[str, int]] = {}
+        self.app: AppConfig | None = None
+        self.server: ThreadingHTTPServer | None = None
+
+    # ---- 基础 ----
+    def ensure_files(self) -> None:
+        self.root.mkdir(parents=True, exist_ok=True)
+        if not self.config_path.exists():
+            self.config_path.write_text(CONFIG_TEMPLATE, encoding="utf-8")
+        if not self.accounts_path.exists():
+            self.accounts_path.write_text(ACCOUNTS_TEMPLATE, encoding="utf-8")
+
+    def push_log(self, level: str, name: str, message: str) -> None:
+        with self.lock:
+            self.log_seq += 1
+            self.logs.append({
+                "id": self.log_seq,
+                "t": time.strftime("%H:%M:%S"),
+                "level": level,
+                "src": name,
+                "msg": message,
+            })
+
+    def reload(self) -> AppConfig | None:
+        try:
+            self.app = load_config(self.root, self.config_path, self.accounts_path)
+            self.error = ""
+        except ConfigError as exc:
+            self.app = None
+            self.error = str(exc)
+        return self.app
+
+    # ---- 账号 ----
+    def add_account(self, name: str) -> None:
+        import yaml
+
+        name = name.strip()
+        if not name:
+            raise ConfigError("账号标识不能为空")
+        raw = yaml.safe_load(self.accounts_path.read_text(encoding="utf-8")) or {}
+        accounts = raw.get("accounts") or []
+        if any(str(item.get("name")) == name for item in accounts if isinstance(item, dict)):
+            raise ConfigError(f"账号 {name} 已存在")
+        accounts.append({"name": name, "enabled": True})
+        raw["accounts"] = accounts
+        self.accounts_path.write_text(
+            yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8"
+        )
+        self.reload()
+
+    def delete_account(self, name: str) -> None:
+        import yaml
+
+        raw = yaml.safe_load(self.accounts_path.read_text(encoding="utf-8")) or {}
+        raw["accounts"] = [a for a in (raw.get("accounts") or [])
+                           if not (isinstance(a, dict) and str(a.get("name")) == name)]
+        self.accounts_path.write_text(
+            yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8"
+        )
+        self.reload()
+
+    # ---- 快照 ----
+    def status_payload(self) -> dict[str, Any]:
+        app = self.app
+        accounts = []
+        if app is not None:
+            for account in app.accounts:
+                profile = app.profile_path(account)
+                accounts.append({
+                    "name": account.name,
+                    "enabled": account.enabled,
+                    "course_ids": account.course_ids,
+                    "logged_in": (profile / "Default").exists() or (profile / "Local State").exists(),
+                })
+        return {
+            "status": self.status,
+            "error": self.error,
+            "configured": app is not None,
+            "accounts": accounts,
+            "browser": find_edge_exe() or "内置 Chromium",
+            "progress": self.progress,
+            "events": self.events[-80:],
+        }
+
+
+# ------------------------------------------------------------------ API 实现
+def api_status(state: AppState) -> dict:
+    return state.status_payload()
+
+
+def api_add_account(state: AppState, body: dict) -> dict:
+    state.add_account(str(body.get("name") or ""))
+    return state.status_payload()
+
+
+def api_delete_account(state: AppState, body: dict) -> dict:
+    state.delete_account(str(body.get("name") or ""))
+    return state.status_payload()
+
+
+def api_login(state: AppState, body: dict) -> dict:
+    app = state.app
+    if app is None:
+        raise ConfigError(state.error or "配置未就绪")
+    account = app.account(str(body.get("name") or ""))
+    state.status = "logging-in"
+    try:
+        session.login(app, account, headless=False)
+        return {"ok": True, "account": account.name}
+    finally:
+        state.status = "idle"
+
+
+def _client_for(state: AppState, name: str):
+    app = state.app
+    if app is None:
+        raise ConfigError(state.error or "配置未就绪")
+    account = app.account(name)
+    limiter = TokenBucket(app.runtime.rps, burst=max(1.0, app.runtime.rps))
+    client, transport = scheduler.make_client(app, account, limiter, None)
+    return account, client, transport
+
+
+def api_courses(state: AppState, body: dict) -> dict:
+    account, client, transport = _client_for(state, str(body.get("name") or ""))
+    try:
+        if not client.check_session():
+            raise LoginRequired(f"{account.name} 还没登录，先点「登录」")
+        rows = []
+        for course in client.my_courses(account.semester_id, account.academic_year_id):
+            try:
+                cid = int(course.get("id"))
+            except (TypeError, ValueError):
+                continue
+            completed = total = 0
+            percent = float(course.get("course_avg_completeness") or 0.0)
+            try:
+                data = client.my_completeness(cid)
+                result = data.get("completed_result") or {}
+                completed = int(result.get("total_completed") or 0)
+                total = int(result.get("total_activities") or 0)
+                percent = float(data.get("study_completeness") or percent)
+            except Exception:
+                pass
+            rows.append({
+                "id": cid,
+                "name": str(course.get("display_name") or course.get("name") or cid),
+                "code": str(course.get("course_code") or ""),
+                "completed": completed,
+                "total": total,
+                "percent": round(percent, 1),
+            })
+        return {"ok": True, "courses": rows, "account": account.name}
+    finally:
+        transport.close()
+
+
+def api_plan(state: AppState, body: dict) -> dict:
+    app = state.app
+    if app is None:
+        raise ConfigError(state.error or "配置未就绪")
+    account = app.account(str(body.get("name") or ""))
+    course_ids = [int(c) for c in (body.get("courses") or [])]
+    if not course_ids:
+        raise ConfigError("先选课程")
+    _, client, transport = _client_for(state, account.name)
+    plans = []
+    try:
+        if not client.check_session():
+            raise LoginRequired(f"{account.name} 还没登录，先点「登录」")
+        for cid in course_ids:
+            plan = build_plan(client, cid, app.runtime)
+            info = describe_plan(plan, app.runtime, account)
+            info["estimate"] = info.pop("eta")
+            plans.append(info)
+    finally:
+        transport.close()
+    return {"ok": True, "plans": plans}
+
+
+def api_bench(state: AppState, body: dict) -> dict:
+    app = state.app
+    if app is None:
+        raise ConfigError(state.error or "配置未就绪")
+    account = app.account(str(body.get("name") or ""))
+    course_ids = [int(c) for c in (body.get("courses") or [])]
+    _, client, transport = _client_for(state, account.name)
+    try:
+        if not client.check_session():
+            raise LoginRequired(f"{account.name} 还没登录，先点「登录」")
+        videos = []
+        for cid in course_ids:
+            plan = build_plan(client, cid, app.runtime)
+            videos.extend(t for t in plan.tasks if t.action == ACTION_VIDEO)
+        count, total, longest = plan_scale(videos)
+        bench = measure(client, rounds=5)
+        advice = recommend(
+            bench, count, total,
+            max_lanes=int(app.runtime.realtime_max_lanes),
+            eta_seconds=float(app.runtime.realtime_eta_seconds or 0),
+            longest_seconds=longest,
+        )
+        return {
+            "ok": True,
+            "lanes": advice.lanes,
+            "presets": advice.presets,
+            "render": advice.render(),
+        }
+    finally:
+        transport.close()
+
+
+def api_start(state: AppState, body: dict) -> dict:
+    app = state.app
+    if app is None:
+        raise ConfigError(state.error or "配置未就绪")
+    if state.status == "running":
+        raise ConfigError("已经有任务在跑了")
+    names = [str(n) for n in (body.get("accounts") or [])]
+    if not names:
+        raise ConfigError("先选账号")
+    course_ids = [int(c) for c in (body.get("courses") or [])]
+    if not course_ids:
+        raise ConfigError("先选课程")
+    speed = str(body.get("speed") or "normal")
+    target = int(body.get("target") or 100)
+    lanes = body.get("lanes")
+
+    accounts = [app.account(name) for name in names]
+    for account in accounts:
+        account.course_ids = list(course_ids)
+        account.speed = speed
+        account.target_percent = target
+        if lanes not in (None, "", "auto"):
+            account.realtime_lanes = lanes
+        elif lanes == "auto":
+            account.realtime_lanes = "auto"
+    app.runtime.speed = speed
+    app.runtime.target_percent = target
+
+    cancel.reset()
+    state.status = "running"
+    state.progress = {name: {"done": 0, "failed": 0, "pending": 0} for name in names}
+    state.events = []
+
+    def on_result(account_name: str, result) -> None:
+        with state.lock:
+            slot = state.progress.setdefault(account_name, {"done": 0, "failed": 0, "pending": 0})
+            if result.status == "done":
+                slot["done"] += 1
+            elif result.status == "failed":
+                slot["failed"] += 1
+            else:
+                slot["pending"] += 1
+            state.events.append({
+                "account": account_name,
+                "id": result.activity_id,
+                "title": result.title,
+                "status": result.status,
+                "percent": result.completeness,
+                "detail": result.detail,
+            })
+
+    def worker() -> None:
+        try:
+            scheduler.run_all(app, accounts, on_result=on_result)
+        except Exception:  # pragma: no cover
+            log.error("执行异常：\n%s", traceback.format_exc())
+        finally:
+            state.status = "idle"
+
+    threading.Thread(target=worker, name="gui-run", daemon=True).start()
+    return {"ok": True}
+
+
+def api_selftest(state: AppState) -> dict:
+    """环境自检：真的拉起一次浏览器，确认打包后的 Playwright / 内核可用。"""
+    import tempfile
+
+    from ..browser import last_launch, launch_context, start_playwright
+    from ..config import RuntimeConfig
+
+    rt = state.app.runtime if state.app else RuntimeConfig()
+    pw = start_playwright()
+    try:
+        with tempfile.TemporaryDirectory() as raw:
+            ctx = launch_context(pw, Path(raw) / "profile", rt, headless=True)
+            try:
+                page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                page.goto("about:blank", timeout=20000)
+                user_agent = page.evaluate("() => navigator.userAgent")
+            finally:
+                ctx.close()
+        info = last_launch()
+        return {
+            "ok": True,
+            "user_agent": user_agent,
+            "browser": info.get("label", ""),
+            "channel": rt.browser_channel,
+            "bundle": hasattr(sys, "_MEIPASS"),
+        }
+    finally:
+        try:
+            pw.stop()
+        except Exception:  # pragma: no cover
+            pass
+
+
+def api_stop(state: AppState) -> dict:
+    if state.status == "running":
+        cancel.request()
+        state.status = "stopping"
+        log.warning("收到停止请求……")
+    return {"ok": True, "status": state.status}
+
+
+def api_logs(state: AppState, after: int) -> dict:
+    with state.lock:
+        lines = [item for item in state.logs if item["id"] > after]
+        return {"next": state.log_seq, "lines": lines}
+
+
+def api_quit(state: AppState) -> dict:
+    cancel.request()
+    server = state.server
+
+    def shutdown() -> None:
+        time.sleep(0.2)
+        if server is not None:
+            server.shutdown()
+
+    threading.Thread(target=shutdown, daemon=True).start()
+    return {"ok": True}
+
+
+# ------------------------------------------------------------------ HTTP 层
+class Handler(BaseHTTPRequestHandler):
+    state: AppState
+
+    server_version = "GuetShuakeGUI/1.0"
+
+    def log_message(self, fmt: str, *args) -> None:  # 静音访问日志
+        return
+
+    # ---- 工具 ----
+    def _send(self, code: int, payload: bytes, content_type: str) -> None:
+        self.send_response(code)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        try:
+            self.wfile.write(payload)
+        except (BrokenPipeError, ConnectionResetError):  # pragma: no cover
+            pass
+
+    def _json(self, data: Any, code: int = 200) -> None:
+        self._send(code, json.dumps(data, ensure_ascii=False).encode("utf-8"),
+                   "application/json; charset=utf-8")
+
+    def _fail(self, message: str, code: int = 400) -> None:
+        self._json({"ok": False, "error": message}, code)
+
+    def _authorized(self, query: dict) -> bool:
+        token = (query.get("t") or [""])[0] or self.headers.get("X-Token", "")
+        return bool(token) and secrets.compare_digest(token, self.state.token)
+
+    def _body(self) -> dict:
+        length = int(self.headers.get("Content-Length") or 0)
+        if not length:
+            return {}
+        try:
+            return json.loads(self.rfile.read(length).decode("utf-8")) or {}
+        except (ValueError, UnicodeDecodeError):
+            return {}
+
+    # ---- 路由 ----
+    def do_GET(self) -> None:
+        parsed = urlparse(self.path)
+        query = parse_qs(parsed.query)
+        if not self._authorized(query):
+            self._fail("token 无效", 403)
+            return
+        if parsed.path in ("/", "/index.html"):
+            try:
+                html = web_index().read_bytes()
+            except OSError as exc:
+                self._fail(f"前端文件缺失：{exc}", 500)
+                return
+            self._send(200, html, "text/html; charset=utf-8")
+            return
+        if parsed.path == "/api/status":
+            self._json(api_status(self.state))
+            return
+        if parsed.path == "/api/logs":
+            after = int((query.get("after") or ["0"])[0] or 0)
+            self._json(api_logs(self.state, after))
+            return
+        self._fail("not found", 404)
+
+    def do_POST(self) -> None:
+        parsed = urlparse(self.path)
+        query = parse_qs(parsed.query)
+        if not self._authorized(query):
+            self._fail("token 无效", 403)
+            return
+        body = self._body()
+        routes = {
+            "/api/accounts": lambda: api_add_account(self.state, body),
+            "/api/accounts/delete": lambda: api_delete_account(self.state, body),
+            "/api/login": lambda: api_login(self.state, body),
+            "/api/courses": lambda: api_courses(self.state, body),
+            "/api/plan": lambda: api_plan(self.state, body),
+            "/api/bench": lambda: api_bench(self.state, body),
+            "/api/start": lambda: api_start(self.state, body),
+            "/api/stop": lambda: api_stop(self.state),
+            "/api/selftest": lambda: api_selftest(self.state),
+            "/api/quit": lambda: api_quit(self.state),
+        }
+        handler = routes.get(parsed.path)
+        if handler is None:
+            self._fail("not found", 404)
+            return
+        try:
+            self._json(handler())
+        except ConfigError as exc:
+            self._fail(str(exc), 400)
+        except LoginRequired as exc:
+            self._fail(str(exc), 401)
+        except (TransportError, TronClassError, SessionExpired) as exc:
+            self._fail(f"接口调用失败：{exc}", 502)
+        except (SessionError, BrowserUnavailable) as exc:
+            self._fail(str(exc), 500)
+        except Exception as exc:  # pragma: no cover
+            log.error("处理 %s 出错：\n%s", parsed.path, traceback.format_exc())
+            self._fail(f"{type(exc).__name__}: {exc}", 500)
+
+
+def make_handler(state: AppState):
+    return type("BoundHandler", (Handler,), {"state": state})
+
+
+def build_server(state: AppState, port: int = 0) -> ThreadingHTTPServer:
+    server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(state))
+    server.daemon_threads = True
+    state.server = server
+    return server

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from .benchmark import measure, plan_scale, recommend
+from .cancel import requested as cancel_requested
 from .client import (
     SERVER_MAX_SPAN_DEFAULT,
     SessionExpired,
@@ -619,6 +620,9 @@ class AccountRunner:
 
         step_gap = (gap[0] / parallelism, gap[1] / parallelism) if parallelism > 1 else gap
         while jobs:
+            if cancel_requested():
+                self.log.warning("收到停止请求，收尾退出（进度已写入 state）")
+                break
             for job in list(jobs):
                 try:
                     outcome = self._guard(job.step)
@@ -642,6 +646,9 @@ class AccountRunner:
     def _run_materials(self, tasks: list[ActivityTask], target: int) -> list[TaskResult]:
         results: list[TaskResult] = []
         for task in tasks:
+            if cancel_requested():
+                self.log.warning("收到停止请求，收尾退出（进度已写入 state）")
+                break
             job = MaterialJob(self, task, target)
             try:
                 self._guard(job.prepare)

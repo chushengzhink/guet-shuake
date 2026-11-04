@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GUET 畅课助手</title>
+<style>
+  :root{
+    --bg:#f5f6fa; --card:#ffffff; --ink:#1c2030; --muted:#6b7280; --line:#e6e8f0;
+    --accent:#5b5bd6; --accent-soft:#eef0ff; --ok:#12b886; --warn:#f59f00; --bad:#e03131;
+    --shadow:0 1px 2px rgba(16,24,40,.04), 0 8px 24px rgba(16,24,40,.06);
+    --radius:14px;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:14px/1.55 system-ui,"Segoe UI","Microsoft YaHei",sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .app{display:grid; grid-template-columns:264px 1fr; height:100vh}
+  /* ---------- 侧栏 ---------- */
+  aside{
+    background:var(--card); border-right:1px solid var(--line);
+    display:flex; flex-direction:column; padding:18px 16px; gap:14px;
+  }
+  .brand{display:flex; align-items:center; gap:10px; padding:2px 4px 6px}
+  .logo{
+    width:34px;height:34px;border-radius:10px;flex:0 0 34px;
+    background:linear-gradient(135deg,#6d6bf0,#9d7bff);
+    display:grid;place-items:center;color:#fff;font-weight:700;font-size:15px;
+    box-shadow:0 4px 12px rgba(109,107,240,.35);
+  }
+  .brand h1{font-size:15px;margin:0;font-weight:650;letter-spacing:.2px}
+  .brand p{margin:1px 0 0;font-size:11.5px;color:var(--muted)}
+  .side-title{font-size:11.5px;color:var(--muted);letter-spacing:.4px;margin:4px 2px 0;font-weight:600}
+  .accounts{display:flex;flex-direction:column;gap:8px;overflow:auto}
+  .acc{
+    border:1px solid var(--line); border-radius:12px; padding:9px 10px;
+    display:flex; align-items:center; gap:8px; background:#fbfbfe;
+  }
+  .acc .dot{width:7px;height:7px;border-radius:50%;background:#c9ccd6;flex:0 0 7px}
+  .acc.on .dot{background:var(--ok);box-shadow:0 0 0 3px rgba(18,184,134,.14)}
+  .acc .name{font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .acc .sub{font-size:11px;color:var(--muted)}
+  .icon-btn{
+    margin-left:auto;border:1px solid var(--line);background:#fff;color:var(--muted);
+    border-radius:9px;padding:4px 8px;font-size:11.5px;cursor:pointer;transition:.15s;
+  }
+  .icon-btn:hover{border-color:#c9cbe4;color:var(--accent)}
+  .add-acc{display:flex;gap:6px}
+  input[type=text],input[type=number]{
+    flex:1;min-width:0;border:1px solid var(--line);border-radius:10px;padding:8px 10px;
+    font:inherit;background:#fff;color:var(--ink);outline:none;transition:.15s;
+  }
+  input:focus{border-color:#b9b9ef;box-shadow:0 0 0 3px var(--accent-soft)}
+  .btn{
+    border:0;border-radius:10px;padding:9px 14px;font:inherit;font-weight:600;
+    cursor:pointer;transition:.15s;white-space:nowrap;
+  }
+  .btn.primary{background:var(--accent);color:#fff;box-shadow:0 6px 16px rgba(91,91,214,.28)}
+  .btn.primary:hover{background:#4b4bc4}
+  .btn.ghost{background:#fff;border:1px solid var(--line);color:var(--ink)}
+  .btn.ghost:hover{border-color:#c9cbe4}
+  .btn.danger{background:#fff0f0;color:#c92a2a;border:1px solid #ffd7d7}
+  .btn:disabled{opacity:.5;cursor:not-allowed;box-shadow:none}
+  .side-foot{margin-top:auto;font-size:11.5px;color:var(--muted);display:flex;flex-direction:column;gap:6px}
+  /* ---------- 主区 ---------- */
+  main{overflow:auto;padding:20px 24px 28px;display:flex;flex-direction:column;gap:16px;min-height:0}
+  main>.card:last-child{flex:1 1 auto;display:flex;flex-direction:column;min-height:220px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+        box-shadow:var(--shadow);padding:16px 18px}
+  .card h2{margin:0 0 2px;font-size:14px;font-weight:650;display:flex;align-items:center;gap:8px}
+  .card h2 .step{
+    width:20px;height:20px;border-radius:7px;background:var(--accent-soft);color:var(--accent);
+    display:grid;place-items:center;font-size:11.5px;font-weight:700;
+  }
+  .hint{color:var(--muted);font-size:12px;margin:0 0 12px}
+  .courses{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px}
+  .course{border:1px solid var(--line);border-radius:12px;padding:10px 12px;cursor:pointer;
+          transition:.15s;background:#fcfcff;position:relative}
+  .course:hover{border-color:#c9cbe4;transform:translateY(-1px)}
+  .course.sel{border-color:var(--accent);background:var(--accent-soft)}
+  .course .t{font-weight:600;font-size:13px;margin-bottom:6px;padding-right:18px;line-height:1.35}
+  .course .meta{font-size:11.5px;color:var(--muted);display:flex;justify-content:space-between}
+  .bar{height:5px;border-radius:4px;background:#eceef6;margin-top:8px;overflow:hidden}
+  .bar>i{display:block;height:100%;border-radius:4px;background:linear-gradient(90deg,#8f8ff5,#6d6bf0)}
+  .chips{display:flex;flex-wrap:wrap;gap:8px}
+  .chip{border:1px solid var(--line);border-radius:999px;padding:7px 13px;font-size:12.5px;
+        cursor:pointer;background:#fff;transition:.15s;color:var(--ink)}
+  .chip small{color:var(--muted);margin-left:6px;font-size:11px}
+  .chip.sel{background:var(--accent);border-color:var(--accent);color:#fff}
+  .chip.sel small{color:rgba(255,255,255,.8)}
+  .row{display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap}
+  .field{display:flex;flex-direction:column;gap:6px}
+  .field label{font-size:11.5px;color:var(--muted);font-weight:600}
+  .field input{width:120px}
+  .actions{display:flex;gap:10px;align-items:center;margin-top:2px}
+  .status-pill{font-size:12px;padding:5px 11px;border-radius:999px;background:#eef0f6;color:var(--muted);font-weight:600}
+  .status-pill.running{background:#e6fcf5;color:#0b7285}
+  .status-pill.stopping{background:#fff4e6;color:#b35c00}
+  .progress{display:flex;flex-direction:column;gap:8px}
+  .prog-row{display:grid;grid-template-columns:110px 1fr 150px;align-items:center;gap:10px;font-size:12.5px}
+  .prog-row .track{height:8px;border-radius:6px;background:#eceef6;overflow:hidden}
+  .prog-row .track>i{display:block;height:100%;background:linear-gradient(90deg,#63e6be,#12b886);transition:width .3s}
+  .log{
+    font:12px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace;
+    background:#12141c;color:#c9d1e5;border-radius:12px;padding:12px 14px;
+    flex:1 1 auto;min-height:180px;overflow:auto;white-space:pre-wrap;word-break:break-word;
+  }
+  .log .lv-WARNING{color:#ffd479}
+  .log .lv-ERROR{color:#ff8a8a}
+  .log .lv-INFO{color:#c9d1e5}
+  .log b{color:#8d8df7;font-weight:600}
+  .empty{color:var(--muted);font-size:12.5px;padding:6px 0}
+  .toast{position:fixed;right:20px;bottom:20px;background:#1c2030;color:#fff;padding:10px 14px;
+         border-radius:10px;font-size:12.5px;opacity:0;transform:translateY(8px);transition:.2s;pointer-events:none;max-width:380px}
+  .toast.show{opacity:1;transform:none}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <div class="brand">
+      <div class="logo">课</div>
+      <div><h1>畅课助手</h1><p>GUET · 后台刷课</p></div>
+    </div>
+
+    <div class="side-title">账号</div>
+    <div class="accounts" id="accounts"></div>
+    <div class="add-acc">
+      <input type="text" id="newAcc" placeholder="账号标识，如 acc01">
+      <button class="btn ghost" onclick="addAccount()">添加</button>
+    </div>
+
+    <div class="side-foot">
+      <div>浏览器：<span id="browser">—</span></div>
+      <div style="display:flex;gap:8px">
+        <button class="btn ghost" style="flex:1" onclick="quit()">退出</button>
+      </div>
+    </div>
+  </aside>
+
+  <main>
+    <div class="card">
+      <h2><span class="step">1</span>选账号与课程</h2>
+      <p class="hint" id="courseHint">先在左侧添加并登录账号，然后点「刷新课程」。</p>
+      <div class="row" style="margin-bottom:12px">
+        <button class="btn ghost" onclick="loadCourses()">刷新课程</button>
+        <span class="status-pill" id="sessionState">未登录</span>
+      </div>
+      <div class="courses" id="courses"></div>
+    </div>
+
+    <div class="card">
+      <h2><span class="step">2</span>刷课节奏</h2>
+      <p class="hint">平台只校验单段 ≤125 秒，不校验真实时间——想快就用 probe。</p>
+      <div class="chips" id="speeds"></div>
+      <div class="row" style="margin-top:14px">
+        <div class="field"><label>目标百分比</label><input type="number" id="target" value="100" min="1" max="100"></div>
+        <div class="field" id="lanesField" style="display:none">
+          <label>并行路数</label><input type="text" id="lanes" value="auto" style="width:130px">
+        </div>
+        <button class="btn ghost" id="benchBtn" style="display:none" onclick="bench()">实测推荐</button>
+        <span class="hint" id="planHint" style="margin:0 0 8px"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2><span class="step">3</span>开始</h2>
+      <div class="actions">
+        <button class="btn primary" id="startBtn" onclick="start()">开始刷课</button>
+        <button class="btn danger" id="stopBtn" onclick="stop()" disabled>停止</button>
+        <span class="status-pill" id="runState">空闲</span>
+      </div>
+      <div class="progress" id="progress" style="margin-top:14px"></div>
+    </div>
+
+    <div class="card">
+      <h2>运行日志</h2>
+      <div class="log" id="log"></div>
+    </div>
+  </main>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const TOKEN = new URLSearchParams(location.search).get('t') || '';
+const SPEEDS = [
+  ['probe','probe','125s 顶格，最快'],
+  ['normal','normal','120s 一段，默认'],
+  ['human','human','30s 一段，最慢'],
+  ['realtime','realtime','真实时间，多路并行'],
+  ['tick','tick','单线程定时'],
+];
+let state = {accounts:[], courses:[], selected:new Set(), speed:'normal', logSeq:0, busy:false};
+
+function $(id){ return document.getElementById(id); }
+function toast(msg){
+  const el = $('toast'); el.textContent = msg; el.classList.add('show');
+  clearTimeout(el._t); el._t = setTimeout(()=>el.classList.remove('show'), 2600);
+}
+async function api(path, body){
+  const res = await fetch(path + '?t=' + encodeURIComponent(TOKEN), {
+    method: body === undefined ? 'GET' : 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const data = await res.json().catch(()=>({ok:false,error:'返回不是 JSON'}));
+  if (!res.ok || data.ok === false) throw new Error(data.error || ('HTTP ' + res.status));
+  return data;
+}
+
+/* ---------- 状态 ---------- */
+function renderAccounts(){
+  $('browser').textContent = state.browser || '未检测到';
+  const box = $('accounts');
+  if (!state.accounts.length){
+    box.innerHTML = '<div class="empty">还没有账号，先在下面添加一个。</div>';
+    return;
+  }
+  box.innerHTML = state.accounts.map(a => `
+    <div class="acc ${a.logged_in?'on':''}">
+      <div class="dot"></div>
+      <div style="min-width:0">
+        <div class="name">${esc(a.name)}</div>
+        <div class="sub">${a.logged_in?'已登录':'未登录'}</div>
+      </div>
+      <button class="icon-btn" onclick="login('${esc(a.name)}')">${a.logged_in?'重登':'登录'}</button>
+    </div>`).join('');
+}
+function renderSpeeds(){
+  $('speeds').innerHTML = SPEEDS.map(([id,label,desc]) => `
+    <div class="chip ${state.speed===id?'sel':''}" onclick="pickSpeed('${id}')">
+      ${label}<small>${desc}</small>
+    </div>`).join('');
+  $('lanesField').style.display = state.speed === 'realtime' ? 'flex' : 'none';
+  $('benchBtn').style.display = state.speed === 'realtime' ? 'inline-flex' : 'none';
+}
+function renderCourses(){
+  const box = $('courses');
+  if (!state.courses.length){
+    box.innerHTML = '<div class="empty">还没有课程数据 — 先登录账号，再点左上角「刷新课程」。</div>';
+    return;
+  }
+  box.innerHTML = state.courses.map(c => `
+    <div class="course ${state.selected.has(c.id)?'sel':''}" onclick="toggleCourse(${c.id})">
+      <div class="t">${esc(c.name)}</div>
+      <div class="meta"><span>${esc(c.code||'')}</span><span>${c.completed}/${c.total} · ${c.percent}%</span></div>
+      <div class="bar"><i style="width:${Math.min(100,c.percent)}%"></i></div>
+    </div>`).join('');
+}
+function renderProgress(){
+  const box = $('progress');
+  const entries = Object.entries(state.progress || {});
+  if (!entries.length){ box.innerHTML = ''; return; }
+  box.innerHTML = entries.map(([name, p]) => {
+    const total = (p.done||0)+(p.failed||0)+(p.pending||0);
+    const pct = total ? Math.round((p.done/total)*100) : 0;
+    return `<div class="prog-row">
+      <div>${esc(name)}</div>
+      <div class="track"><i style="width:${pct}%"></i></div>
+      <div style="color:var(--muted);text-align:right">${p.done} 完成${p.failed?` · ${p.failed} 失败`:""}${p.pending?` · ${p.pending} 待续`:""}</div>
+    </div>`;
+  }).join('');
+}
+function renderRunState(){
+  const map = {idle:'空闲', running:'运行中', stopping:'停止中', 'logging-in':'登录中'};
+  const el = $('runState');
+  el.textContent = map[state.status] || state.status;
+  el.className = 'status-pill ' + (state.status === 'running' ? 'running' : state.status === 'stopping' ? 'stopping' : '');
+  const busy = state.status === 'running' || state.status === 'stopping';
+  $('startBtn').disabled = busy;
+  $('stopBtn').disabled = !busy;
+}
+async function refresh(){
+  try{
+    const data = await api('/api/status');
+    state.accounts = data.accounts || [];
+    state.status = data.status;
+    state.progress = data.progress || {};
+    if (data.error) $('courseHint').textContent = data.error;
+    renderAccounts(); renderProgress(); renderRunState();
+  }catch(e){ /* 后端还没起好时忽略 */ }
+}
+
+/* ---------- 动作 ---------- */
+function esc(s){ return String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+
+async function addAccount(){
+  const name = $('newAcc').value.trim();
+  if (!name) return toast('先填账号标识');
+  try{
+    await api('/api/accounts', {name});
+    $('newAcc').value = '';
+    toast('已添加 ' + name + '，请点「登录」');
+    await refresh();
+  }catch(e){ toast(e.message); }
+}
+async function login(name){
+  toast('正在打开浏览器，请完成登录…');
+  try{
+    await api('/api/login', {name});
+    toast(name + ' 登录成功');
+    await refresh();
+    await loadCourses();
+  }catch(e){ toast(e.message); }
+}
+async function loadCourses(){
+  const acc = state.accounts.find(a => a.logged_in) || state.accounts[0];
+  if (!acc) return toast('先添加账号');
+  $('courseHint').textContent = '正在读取课程…';
+  try{
+    const data = await api('/api/courses', {name: acc.name});
+    state.courses = data.courses || [];
+    state.selected = new Set(state.courses.slice(0,1).map(c => c.id));
+    $('courseHint').textContent = `账号 ${acc.name}：共 ${state.courses.length} 门课程，勾选要刷的课。`;
+    $('sessionState').textContent = '已登录 · ' + acc.name;
+    $('sessionState').className = 'status-pill running';
+    renderCourses();
+  }catch(e){
+    $('courseHint').textContent = e.message;
+    $('sessionState').textContent = '未登录';
+    $('sessionState').className = 'status-pill';
+  }
+}
+function toggleCourse(id){
+  if (state.selected.has(id)) state.selected.delete(id); else state.selected.add(id);
+  renderCourses();
+}
+function pickSpeed(id){ state.speed = id; renderSpeeds(); }
+
+async function bench(){
+  const acc = state.accounts.find(a => a.logged_in) || state.accounts[0];
+  if (!acc || !state.selected.size) return toast('先选账号和课程');
+  try{
+    const data = await api('/api/bench', {name: acc.name, courses: [...state.selected]});
+    $('lanes').value = data.lanes;
+    toast('实测推荐 ' + data.lanes + ' 路');
+  }catch(e){ toast(e.message); }
+}
+
+async function start(){
+  const accounts = state.accounts.filter(a => a.logged_in).map(a => a.name);
+  if (!accounts.length) return toast('先登录账号');
+  if (!state.selected.size) return toast('先选课程');
+  try{
+    await api('/api/start', {
+      accounts,
+      courses: [...state.selected],
+      speed: state.speed,
+      target: Number($('target').value || 100),
+      lanes: state.speed === 'realtime' ? $('lanes').value : null,
+    });
+    toast('已开始');
+    await refresh();
+  }catch(e){ toast(e.message); }
+}
+async function stop(){
+  try{ await api('/api/stop'); toast('正在停止…'); await refresh(); }
+  catch(e){ toast(e.message); }
+}
+
+/* ---------- 日志 ---------- */
+async function pollLogs(){
+  try{
+    const data = await api('/api/logs?after=' + state.logSeq);
+    state.logSeq = data.next;
+    if (data.lines && data.lines.length){
+      const box = $('log');
+      const atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
+      for (const line of data.lines){
+        const div = document.createElement('div');
+        div.className = 'lv-' + line.level;
+        div.textContent = `${line.t}  ${line.msg}`;
+        box.appendChild(div);
+      }
+      while (box.childElementCount > 800) box.removeChild(box.firstChild);
+      if (atBottom) box.scrollTop = box.scrollHeight;
+    }
+  }catch(e){ /* ignore */ }
+}
+
+async function quit(){
+  try{ await api('/api/quit', {}); }catch(e){}
+  window.close();
+  document.body.innerHTML = '<div style="padding:40px;font:15px system-ui">已退出，可以关闭这个窗口。</div>';
+}
+
+/* ---------- 启动 ---------- */
+renderSpeeds();
+refresh();
+loadCourses();
+setInterval(refresh, 1500);
+setInterval(pollLogs, 1000);
+</script>
+</body>
+</html>

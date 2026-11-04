@@ -30,6 +30,7 @@ class ConfigError(RuntimeError):
 class RuntimeConfig:
     base_url: str = "https://courses.guet.edu.cn"
     engine: str = "http"
+    browser_channel: str = "auto"     # auto / msedge / chrome / chromium（auto = 系统 Edge 优先）
     headless: bool = True
     auto_login: bool = False
     login_timeout: int = 300
@@ -210,7 +211,7 @@ FLOAT_FIELDS = {"rps", "global_rps", "timeout"}
 BOOL_FIELDS = {"headless", "auto_login", "telemetry", "tick_once"}
 STR_FIELDS = {
     "base_url", "engine", "speed", "proxy", "user_agent",
-    "profile_dir", "state_dir", "log_dir",
+    "profile_dir", "state_dir", "log_dir", "browser_channel",
 }
 
 

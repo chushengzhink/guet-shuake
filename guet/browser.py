@@ -63,8 +63,13 @@ def _browsers_root() -> Path:
 def resolve_chromium(pw: Playwright) -> tuple[str | None, str]:
     """返回 (要显式指定的 executable_path 或 None, 描述)。
 
-    Playwright 版本与已装浏览器版本对不上时（例如 pip 里是 1.51 要 chromium-1161，
-    本机只有 chromium-1234），自动退到本机已有的那份 Chromium，省一次 150 MB 下载。
+    Playwright 1.6x 在 headless 模式默认去找 `chromium_headless_shell`，
+    而 `executable_path` 属性给的是完整 chromium —— 两者不是一回事，
+    所以这里**总是**返回完整 chromium 路径并显式传下去，
+    避免「明明装了完整浏览器，它却去要没装的 headless shell」。
+
+    另外，Playwright 与已装浏览器版本对不上时（pip 里是 1.51 要 chromium-1161，
+    本机只有 chromium-1234），也退到本机已有的那份，省一次 150 MB 下载。
     """
     expected = ""
     try:
@@ -72,7 +77,7 @@ def resolve_chromium(pw: Playwright) -> tuple[str | None, str]:
     except Exception:  # pragma: no cover
         expected = ""
     if expected and Path(expected).exists():
-        return None, expected
+        return expected, expected
 
     root = _browsers_root()
     patterns = [
@@ -98,6 +103,70 @@ def start_playwright() -> Playwright:
         raise BrowserUnavailable(f"Playwright 启动失败：{exc}") from exc
 
 
+# ------------------------------------------------------------------ 浏览器通道
+# 优先用系统自带的 Edge：Windows 10/11 都有，不用额外下载 100+MB 的 Chromium
+CHANNEL_ORDER: dict[str, tuple[str, ...]] = {
+    "auto": ("msedge", "chrome", "chromium"),
+    "msedge": ("msedge", "chrome", "chromium"),
+    "edge": ("msedge", "chrome", "chromium"),
+    "chrome": ("chrome", "msedge", "chromium"),
+    "chromium": ("chromium",),
+}
+
+
+def find_edge_exe() -> str | None:
+    """返回系统 Edge 的可执行文件路径（GUI 也要用它开 --app 窗口）。"""
+    candidates: list[Path] = []
+    for env in ("ProgramFiles(x86)", "ProgramFiles", "LOCALAPPDATA"):
+        base = os.environ.get(env)
+        if not base:
+            continue
+        candidates.append(Path(base) / "Microsoft" / "Edge" / "Application" / "msedge.exe")
+    for path in candidates:
+        if path.exists():
+            return str(path)
+    return None
+
+
+def _is_missing_browser(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return (
+        "is not found" in text
+        or "executable doesn't exist" in text
+        or "playwright install" in text
+        or "distribution" in text
+    )
+
+
+def _launch_candidates(pw: Playwright, rt: RuntimeConfig) -> list[dict]:
+    """按配置给出依次尝试的启动参数：系统 Edge → Chrome → 内置 Chromium。"""
+    name = (getattr(rt, "browser_channel", "auto") or "auto").strip().lower()
+    order = CHANNEL_ORDER.get(name, CHANNEL_ORDER["auto"])
+    candidates: list[dict] = []
+    for item in order:
+        if item == "chromium":
+            executable, _ = resolve_chromium(pw)
+            candidates.append({"executable_path": executable} if executable else {})
+        else:
+            candidates.append({"channel": item})
+    return candidates
+
+
+def _friendly_launch_error(exc: Exception, profile_dir: Path) -> str:
+    text = str(exc)
+    if "ProcessSingleton" in text or "already in use" in text or "user data directory" in text:
+        return f"profile 目录被占用（{profile_dir}）：先关掉用同一账号开着的浏览器或另一个本工具进程"
+    return f"启动浏览器失败：{exc}"
+
+
+_last_launch: dict[str, str] = {"label": "", "executable": ""}
+
+
+def last_launch() -> dict[str, str]:
+    """最近一次实际用到的浏览器（GUI 自检/排障用）。"""
+    return dict(_last_launch)
+
+
 def launch_context(pw: Playwright, profile_dir: Path, rt: RuntimeConfig, headless: bool) -> BrowserContext:
     profile_dir.mkdir(parents=True, exist_ok=True)
     args = [
@@ -119,22 +188,30 @@ def launch_context(pw: Playwright, profile_dir: Path, rt: RuntimeConfig, headles
     )
     if rt.proxy:
         kwargs["proxy"] = {"server": rt.proxy}
-    executable, _ = resolve_chromium(pw)
-    if executable:
-        kwargs["executable_path"] = executable
-    try:
-        ctx = pw.chromium.launch_persistent_context(**kwargs)
-    except Exception as exc:  # pragma: no cover - 环境相关
-        text = str(exc)
-        if "Executable doesn't exist" in text or "playwright install" in text:
-            raise BrowserUnavailable(
-                "没有找到 Chromium，先执行：python -m playwright install chromium"
-            ) from exc
-        if "ProcessSingleton" in text or "already in use" in text or "user data directory" in text:
-            raise BrowserUnavailable(
-                f"profile 目录被占用（{profile_dir}）：先关掉用同一账号开着的浏览器或另一个本工具进程"
-            ) from exc
-        raise BrowserUnavailable(f"启动 Chromium 失败：{exc}") from exc
+
+    last_error: Exception | None = None
+    for candidate in _launch_candidates(pw, rt):
+        label = candidate.get("channel") or "内置 Chromium"
+        try:
+            ctx = pw.chromium.launch_persistent_context(**{**kwargs, **candidate})
+        except Exception as exc:
+            if _is_missing_browser(exc):
+                log.info("浏览器通道 %s 不可用，换下一个", label)
+                last_error = exc
+                continue
+            raise BrowserUnavailable(_friendly_launch_error(exc, profile_dir)) from exc
+        ctx.set_default_timeout(int(rt.timeout * 1000))
+        _last_launch.update({
+            "label": label,
+            "executable": candidate.get("channel") or candidate.get("executable_path", "") or "bundled",
+        })
+        log.info("浏览器：%s", label)
+        return ctx
+
+    raise BrowserUnavailable(
+        "Edge / Chrome / 内置 Chromium 都启动失败；"
+        f"装个 Edge（Windows 自带）或执行 python -m playwright install chromium。最后错误：{last_error}"
+    )
     ctx.set_default_timeout(int(rt.timeout * 1000))
     return ctx
 

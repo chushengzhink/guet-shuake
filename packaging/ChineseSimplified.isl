@@ -1,0 +1,40 @@
+[LangOptions]
+LanguageName=简体中文
+LanguageID=$0804
+LanguageCodePage=936
+
+[Messages]
+SetupAppTitle=安装程序
+SetupWindowTitle=安装 - %1
+WelcomeLabel1=欢迎安装 [name]
+WelcomeLabel2=即将在你的电脑上安装 [name/ver]。%n%n建议关闭其它程序后继续。
+WizardNext=下一步(&N) >
+WizardBack=< 上一步(&B)
+WizardCancel=取消
+WizardFinish=完成(&F)
+WizardBrowse=浏览(&R)...
+ButtonNext=下一步(&N) >
+ButtonBack=< 上一步(&B)
+ButtonCancel=取消
+ButtonInstall=安装(&I)
+ButtonFinish=完成(&F)
+ButtonBrowse=浏览(&B)...
+ButtonYes=是(&Y)
+ButtonNo=否(&N)
+ButtonOK=确定
+ButtonClose=关闭
+SelectDirDesc=选择安装位置。
+SelectDirLabel3=安装程序将把 [name] 安装到下面的文件夹。
+SelectDirBrowseLabel=点「下一步」继续；想换位置就点「浏览」。
+SelectTasksDesc=选择附加任务。
+SelectTasksTitle=选择附加任务
+ReadyLabel1=准备安装 [name]。
+ReadyLabel2a=点「安装」开始，或点「上一步」修改设置。
+PreparingDesc=正在准备安装……
+InstallingLabel=正在安装，请稍候……
+FinishedHeadingLabel=[name] 安装完成
+FinishedLabel=安装完成。桌面和开始菜单都有快捷方式，双击即可打开。
+ClickFinish=点「完成」退出安装程序。
+StatusExtractFiles=正在解压：%1
+UninstalledAll=已从电脑上移除 [name]。
+ConfirmUninstall=确定要卸载 [name] 吗？%n%n你的账号、登录状态和刷课进度保存在用户目录，不会被删除。

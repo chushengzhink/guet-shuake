@@ -16,6 +16,20 @@ from typing import Any, Iterator, Sequence
 
 LOG_FORMAT = "%(asctime)s %(levelname)-7s [%(name)s] %(message)s"
 
+# 全局日志出口（GUI 的日志面板挂这里）：各模块 logger 是 propagate=False 的，
+# 只挂 root 收不到，所以这里存一份 sink 列表，新老 logger 都补挂。
+_sinks: list[logging.Handler] = []
+_sinks_lock = threading.Lock()
+
+
+def add_global_sink(handler: logging.Handler) -> None:
+    with _sinks_lock:
+        _sinks.append(handler)
+        for name in list(logging.Logger.manager.loggerDict):
+            logger = logging.getLogger(name)
+            if getattr(logger, "_dsh_ready", False):
+                logger.addHandler(handler)
+
 
 def fix_console_encoding() -> None:
     """Windows 控制台默认 GBK，中文日志会花屏；统一切到 UTF-8。"""
@@ -41,6 +55,9 @@ def setup_logger(name: str, log_file: Path | None = None, level: int = logging.I
         fh = logging.FileHandler(log_file, encoding="utf-8")
         fh.setFormatter(logging.Formatter(LOG_FORMAT))
         logger.addHandler(fh)
+    with _sinks_lock:
+        for sink in _sinks:
+            logger.addHandler(sink)
     logger._dsh_ready = True  # type: ignore[attr-defined]
     return logger
 

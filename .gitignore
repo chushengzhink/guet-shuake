@@ -25,3 +25,10 @@ venv/
 .idea/
 Thumbs.db
 desktop.ini
+
+# 构建产物（不进仓库）
+dist/
+build/
+packaging/output/
+packaging/browsers/
+*.log
