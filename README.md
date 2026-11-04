@@ -4,7 +4,7 @@
 
 **浏览器后台刷课 · 图形界面 · 装完即用**
 
-[![Release](https://img.shields.io/badge/release-v1.0.5-5b5bd6)](../../releases)
+[![Release](https://img.shields.io/badge/release-v1.0.6-5b5bd6)](../../releases)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)](#)
 
