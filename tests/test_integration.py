@@ -96,6 +96,9 @@ class FakeTransport:
         self.calls.append((method, path))
         clean = path.split("?")[0]
 
+        if not self.session_ok:
+            return HttpResult(403, path, "403: Forbidden")
+
         if clean == "/api/config":
             if not self.session_ok:
                 return HttpResult(403, path, "403: Forbidden")

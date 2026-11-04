@@ -93,13 +93,23 @@ class TronClassClient:
             raise TronClassError(f"{method} {path} 返回的不是 JSON：{res.text[:180]}")
         return data
 
+    # 会话探测端点：/api/config 在缺 Referer 时会被 WAF 拦 403（实测），所以按顺序多试几个
+    SESSION_PROBES = (
+        "/api/my-semesters",
+        "/api/todos?no-intercept=true",
+        "/api/config?no-intercept=true",
+    )
+
     # ------------------------------------------------------------------ 会话
     def check_session(self) -> bool:
-        try:
-            res = self._call("GET", "/api/config?no-intercept=true")
-        except (TronClassError, TransportError):
-            return False
-        return res.ok and isinstance(res.data, dict)
+        for path in self.SESSION_PROBES:
+            try:
+                res = self._call("GET", path, referer=f"{self.rt.base_url}/user/courses")
+            except (TronClassError, TransportError):
+                continue
+            if res.ok and isinstance(res.data, dict):
+                return True
+        return False
 
     # ------------------------------------------------------------------ 课程
     def my_semesters(self) -> list[dict]:

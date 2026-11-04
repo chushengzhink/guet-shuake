@@ -12,10 +12,11 @@ headless: true          # run 阶段是否无头；login 永远是带界面的
 auto_login: false       # 是否用 accounts.yaml 里的账号密码自动登录（默认 false，扫码/CAS 手动登录一次）
 login_timeout: 300      # 等待登录完成的秒数
 
-# 节奏档：probe（整段一次）/ normal（120s 一段）/ human（30s 一段 + 长间隔）
+# 节奏档：probe（125s 一段，顶格冲）/ normal（120s 一段）/ human（30s 一段 + 长间隔）
+# 服务端对单次上报跨度有硬限制：实测 125 秒，超出会返回 400（工具会自动按上限重排）
 speed: normal
 chunk_seconds: 120      # normal 档的段长
-gap_seconds: [1.5, 3.0] # 写了就覆盖所有档位的段间隔；想做极限测试可以写 [0, 0]
+# gap_seconds: [1.5, 3.0] # 取消注释可固定所有档位的段间隔；不写就跟随上面选的档位
 target_percent: 100     # 视频达标百分比，默认刷满；课程只要求 80% 时可设 80
 
 telemetry: true         # 是否同步 /statistics 埋点（更像真人，可关）

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,8 +30,13 @@ from .util import TokenBucket, human_seconds, jitter_sleep, read_json, atomic_wr
 
 log = setup_logger("runner")
 
+# 服务端硬限制（实测 400 报文）：单次上报跨度最多 125 秒
+# {"message":"Log failed, caused： The set time duration（538s） is too long, maximum is 125s"}
+SERVER_MAX_SPAN_DEFAULT = 125
+MAX_SPAN_RE = re.compile(r"maximum is (\d+)")
+
 SPEED_PROFILES: dict[str, dict[str, Any]] = {
-    "probe": {"chunk": None, "gap": (0.3, 0.8)},
+    "probe": {"chunk": SERVER_MAX_SPAN_DEFAULT, "gap": (0.3, 0.8)},
     "normal": {"chunk": 120, "gap": (1.5, 3.0)},
     "human": {"chunk": 30, "gap": (5.0, 15.0)},
 }
@@ -117,6 +123,18 @@ def _video_percent(resp: dict) -> int | None:
     return None
 
 
+def _server_max_span(message: str) -> int | None:
+    """从 400 报文里解析服务端允许的单段上限（秒）。"""
+    match = MAX_SPAN_RE.search(message or "")
+    if not match:
+        return None
+    try:
+        value = int(match.group(1))
+    except (TypeError, ValueError):
+        return None
+    return value if 1 <= value <= 3600 else None
+
+
 def _read_state(read: dict | None) -> tuple[str, int, list]:
     if not read:
         return "", 0, []
@@ -201,6 +219,20 @@ class VideoJob:
         except SessionExpired:
             raise
         except (TronClassError, TransportError) as exc:
+            message = str(exc)
+            limit = _server_max_span(message)
+            if limit:
+                # 服务端明确告知上限：一次学会，直接按上限重排，不再盲目试
+                self.runner.max_span = min(self.runner.max_span, limit)
+                self.chunk = min(int(self.chunk or limit), limit)
+                self.stalled = 0
+                self.detail = f"服务端限制单段 ≤{limit}s，已改用 {self.chunk}s 段"
+                self.runner.log.info(
+                    "  %s 服务端限制单段 ≤%ss，自动改用 %ss 段", self.task.label, limit, self.chunk
+                )
+                self._refresh()
+                self._replan()
+                return "progress"
             self.stalled += 1
             self.detail = f"{start}-{end}s 上报异常：{exc}"
             if self.stalled > 3:
@@ -403,6 +435,7 @@ class AccountRunner:
         self.state = state or StateStore(app.state_path(account), account.name)
         self.on_result = on_result
         self.request_count = 0
+        self.max_span = SERVER_MAX_SPAN_DEFAULT
         self.telemetry = Telemetry(client, self.rt, self.log, enabled=bool(self.rt.telemetry))
 
     # ------------------------------------------------------------------ 账号信息
@@ -446,12 +479,11 @@ class AccountRunner:
     def run_course(self, cid: int, only: set[int] | None = None, dry_run: bool = False) -> list[TaskResult]:
         speed_name = self.account.effective_speed(self.rt)
         speed = SPEED_PROFILES.get(speed_name, SPEED_PROFILES["normal"])
-        if speed["chunk"] is None:            # probe：整段一次
-            chunk = None
-        elif speed_name == "normal":          # normal：允许用配置里的 chunk_seconds 覆盖
-            chunk = int(self.rt.chunk_seconds or speed["chunk"])
-        else:                                 # human：固定小段，配置不参与
+        if speed_name == "normal" and self.rt.chunk_seconds:
+            chunk: int | None = int(self.rt.chunk_seconds)   # normal：允许配置覆盖段长
+        else:
             chunk = int(speed["chunk"])
+        chunk = min(chunk, self.max_span)                     # 服务端上限（默认 125s）
         gap = tuple(self.rt.gap) if self.rt.gap_explicit else tuple(speed["gap"])
         target = self.account.effective_target(self.rt)
 

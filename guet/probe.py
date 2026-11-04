@@ -12,11 +12,12 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from .client import TronClassClient
+from .client import TronClassClient, TronClassError
 from .config import AccountConfig, AppConfig
 from .progress import merge_ranges, plan_chunks
-from .runner import _read_state
+from .runner import _read_state, _server_max_span
 from .session import open_transport
+from .transport import TransportError
 from .util import TokenBucket, setup_logger
 
 log = setup_logger("probe")
@@ -69,15 +70,31 @@ def probe_activity(
             result["note"] = "该活动已经是满进度，换一个未完成的活动探针"
             return result
 
-        for chunk in LADDER:
+        ladder: list[int | None] = list(LADDER)
+        index = 0
+        while index < len(ladder):
+            chunk = ladder[index]
+            index += 1
             pieces = plan_chunks(ranges, duration, chunk)
             if not pieces:
                 break
             start, end = pieces[0]
             before_percent = percent
             sent = 0
+            rejected = ""
             for _ in range(max_rounds):
-                resp = client.report_video(activity_id, start, end, cid)
+                try:
+                    resp = client.report_video(activity_id, start, end, cid)
+                except (TronClassError, TransportError) as exc:
+                    rejected = str(exc)
+                    limit = _server_max_span(rejected)
+                    if limit is None:
+                        continue
+                    # 服务端直接告诉了上限：把它插进阶梯，下一步就按上限试
+                    result["server_limit"] = limit
+                    if limit not in ladder:
+                        ladder.insert(index, limit)
+                    break
                 sent += 1
                 data = (resp or {}).get("data") or {}
                 if isinstance(data.get("ranges"), list) and data["ranges"]:
@@ -89,17 +106,25 @@ def probe_activity(
                 if percent > before_percent:
                     break
             accepted = percent > before_percent
-            result["steps"].append({
+            step = {
                 "chunk": chunk if chunk else "full",
                 "span": [start, end],
                 "sent": sent,
                 "percent_before": before_percent,
                 "percent_after": percent,
                 "accepted": accepted,
-            })
+            }
+            if rejected:
+                step["rejected"] = rejected[:200]
+            result["steps"].append(step)
             if accepted:
                 result["accepted_without_error"] = True
-                result["recommend"] = "probe" if chunk is None else ("normal" if chunk >= 120 else "human")
+                if chunk is None:
+                    result["recommend"] = "probe"
+                elif chunk >= 100:
+                    result["recommend"] = "normal"
+                else:
+                    result["recommend"] = "human"
                 break
             # 没涨：刷新一次真实进度，再换更小的段
             read = client.activity_read(activity_id, cid) or {}
@@ -111,6 +136,11 @@ def probe_activity(
 
         result["after"] = {"state": state, "percent": percent}
         result["elapsed"] = round(time.time() - started, 1)
+        if result.get("server_limit"):
+            result.setdefault(
+                "note",
+                f"服务端限制单次上报 ≤{result['server_limit']}s，工具已自动按上限切段，用 normal 档即可",
+            )
         if not result["accepted_without_error"] and result["recommend"] == "normal":
             result["recommend"] = "human"
             result["note"] = "所有跨度都没让进度上涨，建议 human 档并检查课程是否禁止快进/有额外风控"

@@ -26,7 +26,7 @@ from .util import TokenBucket, setup_logger
 
 log = setup_logger("session")
 
-CONFIG_PROBE = "/api/config?no-intercept=true"
+CONFIG_PROBE = "/api/my-semesters"
 
 
 class SessionError(RuntimeError):
@@ -58,7 +58,7 @@ def _session_ok(page, base_url: str) -> bool:
         return False
     try:
         status = page.evaluate(
-            "async () => { const r = await fetch('/api/config?no-intercept=true',"
+            "async () => { const r = await fetch('/api/my-semesters',"
             " {headers: {'X-Requested-With': 'XMLHttpRequest'}}); return r.status; }"
         )
         return int(status) == 200
@@ -143,6 +143,12 @@ def login(app: AppConfig, account: AccountConfig, headless: bool = False) -> dic
                 raise LoginRequired(
                     "登录没有完成（超时）。请在打开的窗口里完成 CAS 登录/扫码，或检查 accounts.yaml 的账号密码。"
                 )
+            try:
+                # 登录后走一遍课程页，让前端把 sduuid 之类的 cookie 补全，再取会话
+                page.goto(f"{rt.base_url}/user/courses", wait_until="domcontentloaded", timeout=60000)
+                page.wait_for_timeout(800)
+            except Exception:  # pragma: no cover - 不影响主流程
+                logger.debug("登录后访问 /user/courses 失败，继续用当前 cookie", exc_info=True)
             cookies = _context_cookies(ctx, rt.base_url)
             if not cookies.get("session"):
                 raise SessionError("登录后没有拿到 session cookie，登录未真正生效")
@@ -154,6 +160,7 @@ def login(app: AppConfig, account: AccountConfig, headless: bool = False) -> dic
                     ctx.close()
                 except Exception:  # pragma: no cover
                     pass
+            time.sleep(0.2)  # 给 Playwright 事件循环一点收敛时间，避免 TargetClosed 噪音
             try:
                 pw.stop()
             except Exception:  # pragma: no cover
@@ -188,6 +195,7 @@ def cookies_from_profile(app: AppConfig, account: AccountConfig) -> dict[str, st
                     ctx.close()
                 except Exception:  # pragma: no cover
                     pass
+            time.sleep(0.2)  # 给 Playwright 事件循环一点收敛时间，避免 TargetClosed 噪音
             try:
                 pw.stop()
             except Exception:  # pragma: no cover
@@ -231,21 +239,25 @@ class _HeldSlot:
                 self._cm = None
 
 
-def open_transport(
-    app: AppConfig,
-    account: AccountConfig,
-    limiter: TokenBucket | None = None,
-) -> Transport:
-    """按账号配置打开传输层（http / browser）。"""
-    rt = app.runtime
-    engine = account.effective_engine(rt)
-    if engine == "http":
-        cookies = cookies_from_profile(app, account)
-        return HttpTransport(rt, cookies, limiter=limiter)
+def _http_probe(rt, transport: Transport) -> bool:
+    """用 requests 真的打一次轻量接口，确认不是被 WAF 拦掉。"""
+    for path in ("/api/my-semesters", "/api/todos?no-intercept=true"):
+        try:
+            res = transport.request("GET", path, referer=f"{rt.base_url}/user/courses")
+        except Exception:
+            return False
+        if res.ok and isinstance(res.data, dict):
+            return True
+    return False
 
+
+def _open_browser(app: AppConfig, account: AccountConfig, limiter) -> Transport:
+    rt = app.runtime
     profile = app.profile_path(account)
     if not profile.exists():
-        raise LoginRequired(f"{account.name} 还没有 profile，先执行：python run.py login --account {account.name}")
+        raise LoginRequired(
+            f"{account.name} 还没有 profile，先执行：python run.py login --account {account.name}"
+        )
     slot = _HeldSlot()
     slot.acquire()
     pw = None
@@ -261,3 +273,31 @@ def open_transport(
             except Exception:  # pragma: no cover
                 pass
         raise
+
+
+def open_transport(
+    app: AppConfig,
+    account: AccountConfig,
+    limiter: TokenBucket | None = None,
+) -> Transport:
+    """按账号配置打开传输层（http / browser）。
+
+    http 模式会先自检一次：如果 requests 被站点拦掉（例如 WAF 只放行浏览器指纹），
+    就自动切到 browser 引擎，保证「配置写 http 也能跑」。
+    """
+    rt = app.runtime
+    engine = account.effective_engine(rt)
+    if engine != "http":
+        return _open_browser(app, account, limiter)
+
+    cookies = cookies_from_profile(app, account)
+    transport = HttpTransport(rt, cookies, limiter=limiter)
+    if _http_probe(rt, transport):
+        return transport
+
+    log.warning("%s：requests 引擎被站点拒绝，自动切换到 browser 引擎（后台 Chromium）", account.name)
+    try:
+        transport.close()
+    except Exception:  # pragma: no cover
+        pass
+    return _open_browser(app, account, limiter)

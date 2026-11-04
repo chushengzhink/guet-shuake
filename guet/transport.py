@@ -115,6 +115,10 @@ class Transport:
         }
         if referer:
             hdrs["Referer"] = referer
+        else:
+            # 站点 WAF 对「没有 Referer 的 XHR」会直接 403（实测 /api/config 就是这样），
+            # 所以任何请求都补一个来源页，跟真实浏览器一致。
+            hdrs["Referer"] = f"{self.rt.base_url}/user/courses"
         if json_body is not None:
             body = json.dumps(json_body, ensure_ascii=False, separators=(",", ":"))
             hdrs.update(JSON_HEADERS)

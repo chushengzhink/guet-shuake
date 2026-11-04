@@ -168,19 +168,29 @@ accounts:
 
 | speed | 段长 | 段间隔 | 说明 |
 |---|---|---|---|
-| `probe` | 整段一次 `{"start":0,"end":duration}` | 0.3~0.8s | 最快；先跑 `probe` 试试服务端吃不吃 |
-| `normal`（默认） | 120s（`chunk_seconds` 可调） | 1.5~3s | 23 个视频 ≈ 125 次上报 |
+| `probe` | 125s（服务端上限，顶格冲） | 0.3~0.8s | 最快；先拿一门课试水 |
+| `normal`（默认） | 120s（`chunk_seconds` 可调） | 1.5~3s | 默认 |
 | `human` | 30s | 5~15s | 慢但最像人，被风控时用 |
 
-`config.yaml` 里只要写了 `gap_seconds`，就会**覆盖所有档位的段间隔**（不写则用上表默认值）。
+**服务端硬限制（实测）**：单次上报跨度最多 **125 秒**，超出直接 400：
 
-按课程 29066 的实际内容（23 个视频共 5h12m + 18 个资料 57 个附件）实测估算，**单账号**：
+```json
+{"message":"Log failed, caused： The set time duration（538s） is too long, maximum is 125s"}
+```
 
-| speed | 预计耗时 | 请求数 |
+所以「整段一次刷满」这条路走不通。工具默认按 125s 切段；万一学校改了这个数，`maximum is Ns` 会被自动解析并按新上限重排（`_server_max_span`），不用改代码。
+
+`config.yaml` 里取消注释 `gap_seconds` 就会**固定所有档位的段间隔**；不写则跟随上表。
+
+按课程 29066 的实际内容（23 个视频共 5h12m + 18 个资料 57 个附件），**单账号**（rps=3）：
+
+| speed | 预计耗时 | 写请求数 |
 |---|---|---|
-| `probe` | ≈4 分钟 | ~100 |
-| `normal` | ≈10 分钟 | ~300 |
-| `human` | ≈30 分钟 | ~300（间隔长） |
+| `probe` | ≈4~5 分钟 | ~207（150 段视频 + 57 附件） |
+| `normal` | ≈10 分钟 | ~207 |
+| `human` | ≈30 分钟 | ~207 |
+
+实测样本：活动 92919（9m23s）用 `probe` 档 5 段 17 秒刷满，零 400。
 
 多账号并行时总耗时 ≈ 最慢的那个账号；`--per-account-jobs 3` 可再压到 1/3 左右。
 
@@ -196,6 +206,7 @@ python run.py probe --account acc01 --activity 92918
 ## 8. 自动降档与断点
 
 * 某次上报返回 2xx 但 `completeness` 没涨 → 判定"服务端不认这个跨度" → 段长减半、重算剩余区间、重试；连续失败 7 次才把该活动标 `failed`，不影响其它活动。
+* 上报被 `400 maximum is Ns` 拒绝 → 立刻解析出服务端上限，按新段长重排（一次就学会，不靠逐级试）。
 * 会话失效（401/跳 CAS/`session` 过期）→ 自动重建会话重试一次；再不行就停下这个账号并提示 `run.py login`。
 * 每个活动处理完立即写 `data/state.<账号>.json`；`Ctrl-C` 中断后重跑只补没做的部分。
 * 同一个 profile 有 `.lock` 保护，重复启动会明确报错而不是把会话搞乱。
@@ -226,7 +237,8 @@ python run.py run    [--all | --account acc01] [--course 29066] [--only 92918,92
 | `会话不可用` / `会话已失效` | 重跑 login；若反复失效，检查是否在别处登录把 `session` 顶掉了 |
 | `profile 正在被进程 N 使用` | 关了占用该 profile 的浏览器/另一个本工具进程，或删 `profiles/<名字>/.lock` |
 | 全部上报都没让百分比上涨 | 用 `human` 档；仍不动就说明课程端有额外限制，此时 `probe` 的 `steps` 会显示每次的 before/after |
-| 403 / 419 频繁 | 降 `--rps`、改 `human`、减少 `--account-jobs` |
+| 403 / 419 频繁 | 降 `--rps`、改 `human`、减少 `--account-jobs`；不带 Referer 的 XHR 会被 WAF 直接 403，工具已统一补 Referer |
+| `400 ... maximum is 125s` | 单段超服务端上限，工具会解析并自动降段；手动调小 `chunk_seconds` 即可 |
 | 找不到 Chromium | `python -m playwright install chromium`（工具也会自动退到本机已有的 `ms-playwright/chromium-*`，只打一条 INFO） |
 
 ## 11. 目录

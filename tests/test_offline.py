@@ -17,9 +17,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from guet.config import ConfigError, load_config  # noqa: E402
+from guet.client import TronClassError  # noqa: E402
 from guet.planner import ACTION_MANUAL, ACTION_MATERIAL, ACTION_SKIP, ACTION_VIDEO, build_plan  # noqa: E402
 from guet.progress import complement, coverage_percent, covered_seconds, merge_ranges, plan_chunks  # noqa: E402
-from guet.runner import MaterialJob, VideoJob  # noqa: E402
+from guet.runner import MaterialJob, VideoJob, _server_max_span  # noqa: E402
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
@@ -43,10 +44,12 @@ class NullTelemetry:
 class FakeServer:
     """模拟 activities-read：区间并集 / 整数百分比 / 可选的最大可接受跨度。"""
 
-    def __init__(self, duration: int, max_span: int | None = None, ignore_all: bool = False):
+    def __init__(self, duration: int, max_span: int | None = None, ignore_all: bool = False,
+                 reject_over: int | None = None):
         self.duration = duration
         self.max_span = max_span
         self.ignore_all = ignore_all
+        self.reject_over = reject_over
         self.ranges: list[list[int]] = []
         self.uploads: list[int] = []
         self.upload_total = 0
@@ -71,6 +74,11 @@ class FakeServer:
 
     def report_video(self, aid, start, end, cid=None):
         self.calls.append(("video", start, end))
+        if self.reject_over is not None and end - start > self.reject_over:
+            raise TronClassError(
+                'POST /api/course/activities-read/1 -> 400 {"message":"Log failed, caused： '
+                f'The set time duration（{end - start}s） is too long, maximum is {self.reject_over}s"}}'
+            )
         if not self.ignore_all and (self.max_span is None or end - start <= self.max_span):
             merged = merge_ranges(list(self.ranges) + [[start, end]])
             self.ranges = [[s, e] for s, e in merged]
@@ -93,6 +101,7 @@ class FakeRunner:
     def __init__(self, client):
         self.client = client
         self.request_count = 0
+        self.max_span = 125
         self.telemetry = NullTelemetry()
         self.log = logging.getLogger("test-runner")
 
@@ -217,6 +226,27 @@ class VideoJobTest(unittest.TestCase):
         job = self.run_job(server, chunk=120)
         self.assertTrue(job.failed)
         self.assertLess(len(server.calls), 60)
+
+    def test_learns_server_max_span_from_400(self):
+        """实测报文：maximum is 125s —— 一次 400 就该学会上限，不再逐级试。"""
+        server = FakeServer(542, reject_over=100)
+        runner = FakeRunner(server)
+        job = VideoJob(runner, Task(duration=542), chunk=300, target=100)
+        job.prepare()
+        for _ in range(100):
+            if job.step() in ("done", "failed"):
+                break
+        self.assertTrue(job.done, job.detail)
+        self.assertEqual(job.percent, 100)
+        self.assertEqual(runner.max_span, 100)
+        self.assertTrue(all(end - start <= 100 for _, start, end in server.calls[1:] if end - start > 0))
+
+    def test_parse_max_span(self):
+        msg = ('POST /api/course/activities-read/92918 -> 400 {"message":"Log failed, caused： '
+               'The set time duration（538s） is too long, maximum is 125s"}')
+        self.assertEqual(_server_max_span(msg), 125)
+        self.assertIsNone(_server_max_span("some random error"))
+        self.assertIsNone(_server_max_span("maximum is 99999s"))
 
     def test_target_80_stops_early(self):
         server = FakeServer(1000)
