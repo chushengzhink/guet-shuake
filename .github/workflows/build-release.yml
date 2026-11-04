@@ -1,14 +1,20 @@
 name: build-release
 
 on:
-  push:
-    tags: ["v*"]
+  # 只在手动触发时构建：本地构建并验证过的签名包，不希望被 CI 产物覆盖
+  # （想改成打 tag 自动出包，把下面注释的 push 段打开即可）
   workflow_dispatch:
     inputs:
       version:
         description: "版本号（不带 v），例如 1.0.0"
         required: true
         default: "1.0.0"
+      publish:
+        description: "构建完成后创建/更新 Release"
+        type: boolean
+        default: false
+  # push:
+  #   tags: ["v*"]
 
 permissions:
   contents: write
@@ -89,9 +95,10 @@ jobs:
           }
 
       - name: 发布 Release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: ${{ inputs.publish }}
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.ver.outputs.value }}
           files: packaging/output/*.exe
           generate_release_notes: true
           body: |
