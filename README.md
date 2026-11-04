@@ -234,6 +234,8 @@ python run.py run --all --speed realtime --lanes all       # 有多少视频开�
 * **两个引擎走同一出口**：`config.yaml` 配了 `proxy` 就以请求级 `proxies` 下发（requests 会先把 `HTTP(S)_PROXY` 环境变量 `setdefault` 进请求参数，只有请求级显式值才能盖住它）；没配则照旧沿用环境变量。
 * **浏览器响应及时释放**：`context.request` 拿到的 `APIResponse` 读完字段立刻 `dispose()`，长时间 tick/realtime 不会累积。
 * **命令行覆盖后会重新校验**：`--target 101`、`--lanes -1` 这类会在进入执行前被拒（退出码 1）。
+* **`--only` 写错直接报错**：`--only abc`、`--only 92918,abc` 一律退出码 1 并提示格式，**不会**静默退化成"处理所选课程的全部活动"；不限制就整个省略该参数。
+* **配置类型不合法会在加载时报错**：`chunk_seconds: nope` → `配置错误：chunk_seconds 必须是整数，收到 'nope'`；写成字符串的数字（`"120"`、`"2.5"`、`"false"`）会被自动转换成对应类型，`course_ids` / `enabled` 写错同样报字段名。
 * **计划任务带全路径**：生成的 `tick-<账号>.bat` 会带上实际的 `--config` / `--accounts` 绝对路径，不会悄悄回落到默认文件。
 
 ### 定时任务（tick 档：单线程 + 固定节拍）

@@ -21,7 +21,7 @@ if str(ROOT) not in sys.path:
 import requests  # noqa: E402
 import run as cli  # noqa: E402
 from guet.client import SessionExpired, TronClassError  # noqa: E402
-from guet.config import RuntimeConfig, load_config  # noqa: E402
+from guet.config import AppConfig, ConfigError, RuntimeConfig, load_config  # noqa: E402
 from guet.realtime import LaneJob  # noqa: E402
 from guet.runner import MaterialJob, VideoJob  # noqa: E402
 from guet.scheduler import CourseCache  # noqa: E402
@@ -185,17 +185,25 @@ class ConcurrencyTest(unittest.TestCase):
                 pass
 
     def test_lock_release_does_not_close_other_files(self):
-        """锁退出时不能关第二次 fd —— 否则会误关复用了该编号的其它文件。"""
+        """锁退出时不能关第二次 fd。
+
+        必须在**持锁期间**打开别的文件：那时锁内部 fd 已被关闭，新文件会复用同一个编号，
+        旧实现退出时再 close 一次就会把它关掉（随后写入报 OSError 9）。
+        """
         with tempfile.TemporaryDirectory() as raw:
             lock = Path(raw) / "acc.lock"
-            other = Path(raw) / "other.txt"
+            handles = []
             with run_lock(lock):
-                pass
-            with open(other, "w", encoding="utf-8") as handle:
-                handle.write("ok")
-            with open(other, "a", encoding="utf-8") as handle:
-                handle.write("!")         # 旧实现会在这里抛 OSError 9
-            self.assertEqual(other.read_text(encoding="utf-8"), "ok!")
+                for index in range(3):      # 多开几个，确保复用命中
+                    handles.append(open(Path(raw) / f"other{index}.txt", "w", encoding="utf-8"))
+            for index, handle in enumerate(handles):
+                handle.write(f"ok{index}")  # 旧实现：这里 OSError 9
+                handle.flush()
+                handle.close()
+            for index in range(3):
+                self.assertEqual(
+                    (Path(raw) / f"other{index}.txt").read_text(encoding="utf-8"), f"ok{index}"
+                )
 
     def test_lock_not_broken_by_old_mtime(self):
         """老锁文件（mtime 10 小时前）只要原进程仍持锁，就必须继续拒绝。"""
@@ -296,6 +304,62 @@ class ProxyTest(unittest.TestCase):
             self.assertEqual(merged["https"], "http://env-b:8080")
 
 
+class OnlyParsingTest(unittest.TestCase):
+    def test_empty_means_no_filter(self):
+        self.assertIsNone(cli.parse_only(""))
+        self.assertIsNone(cli.parse_only("   "))
+
+    def test_valid_list(self):
+        self.assertEqual(cli.parse_only("92918,92919"), {92918, 92919})
+        self.assertEqual(cli.parse_only("92918 92919"), {92918, 92919})
+        self.assertEqual(cli.parse_only("92918，92919"), {92918, 92919})
+
+    def test_invalid_raises_instead_of_ignoring(self):
+        for bad in ("abc", "92918,abc", "-1", "1.5", "all"):
+            with self.assertRaises(ConfigError):
+                cli.parse_only(bad)
+
+
+class ConfigTypeTest(unittest.TestCase):
+    def build(self, config_text: str,
+              accounts_text: str = "accounts:\n  - name: acc01\n    enabled: true\n") -> AppConfig:
+        root = Path(tempfile.mkdtemp())
+        (root / "config.yaml").write_text(config_text, encoding="utf-8")
+        (root / "accounts.yaml").write_text(accounts_text, encoding="utf-8")
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        return load_config(root)
+
+    def test_string_numbers_are_coerced(self):
+        app = self.build('chunk_seconds: "120"\ntarget_percent: "80"\nrps: "2.5"\ntelemetry: "false"\n')
+        self.assertEqual(app.runtime.chunk_seconds, 120)
+        self.assertEqual(app.runtime.target_percent, 80)
+        self.assertAlmostEqual(app.runtime.rps, 2.5)
+        self.assertFalse(app.runtime.telemetry)
+
+    def test_bad_numbers_become_config_error(self):
+        cases = {
+            "chunk_seconds: nope\n": "chunk_seconds",
+            "target_percent: nope\n": "target_percent",
+            "rps: fast\n": "rps",
+            "telemetry: maybe\n": "telemetry",
+            "account_jobs: []\n": "account_jobs",
+        }
+        for text, field in cases.items():
+            with self.assertRaises(ConfigError) as ctx:
+                self.build(text)
+            self.assertIn(field, str(ctx.exception))
+
+    def test_bad_account_course_ids(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self.build("", "accounts:\n  - name: acc01\n    enabled: true\n    course_ids: [abc]\n")
+        self.assertIn("course_ids", str(ctx.exception))
+
+    def test_bad_account_enabled(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self.build("", "accounts:\n  - name: acc01\n    enabled: maybe\n")
+        self.assertIn("enabled", str(ctx.exception))
+
+
 class CliValidationTest(unittest.TestCase):
     def setUp(self):
         shutdown_loggers()
@@ -310,15 +374,23 @@ class CliValidationTest(unittest.TestCase):
         shutdown_loggers()
         self.tmp.cleanup()
 
-    def call(self, extra):
-        return cli.main([
+    def call(self, extra, only: str = "1"):
+        argv = [
             "--config", str(self.root / "config.yaml"),
             "--accounts", str(self.root / "accounts.yaml"),
-            "run", "--only", "1", *extra,
-        ])
+            "run",
+        ]
+        if only is not None:
+            argv += ["--only", only]
+        return cli.main(argv + extra)
 
     def test_target_out_of_range_rejected(self):
         self.assertEqual(self.call(["--target", "101"]), cli.EXIT_ERROR)
+
+    def test_bad_only_rejected_not_widened(self):
+        """--only 写错必须报错退出，绝不能退化成「不限活动」。"""
+        self.assertEqual(self.call([], only="abc"), cli.EXIT_ERROR)
+        self.assertEqual(self.call([], only="92918,abc"), cli.EXIT_ERROR)
 
     def test_negative_lanes_rejected(self):
         self.assertEqual(self.call(["--speed", "realtime", "--lanes", "-1"]), cli.EXIT_ERROR)

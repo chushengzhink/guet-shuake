@@ -141,14 +141,64 @@ def _as_list(value: Any) -> list[Any]:
     return [value]
 
 
-def _to_int_list(value: Any) -> list[int]:
-    out: list[int] = []
-    for item in _as_list(value):
-        try:
-            out.append(int(item))
-        except (TypeError, ValueError):
-            continue
-    return out
+def _to_int(label: str, value: Any) -> int:
+    """统一把配置项转成 int；非法值一律变成带字段名的 ConfigError。"""
+    if isinstance(value, bool):
+        raise ConfigError(f"{label} 必须是整数，收到布尔值 {value!r}")
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"{label} 必须是整数，收到 {value!r}") from exc
+
+
+def _to_float(label: str, value: Any) -> float:
+    if isinstance(value, bool):
+        raise ConfigError(f"{label} 必须是数字，收到布尔值 {value!r}")
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"{label} 必须是数字，收到 {value!r}") from exc
+
+
+_TRUE = {"true", "yes", "on", "1", "是"}
+_FALSE = {"false", "no", "off", "0", "否"}
+
+
+def _to_bool(label: str, value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in _TRUE:
+        return True
+    if text in _FALSE:
+        return False
+    raise ConfigError(f"{label} 必须是布尔值（true/false），收到 {value!r}")
+
+
+INT_FIELDS = {
+    "chunk_seconds", "target_percent", "account_jobs", "per_account_jobs",
+    "max_browser_contexts", "retries", "sub_course_id", "login_timeout",
+    "course_cache_ttl", "realtime_max_lanes", "realtime_eta_seconds",
+    "tick_interval", "tick_threads",
+}
+FLOAT_FIELDS = {"rps", "global_rps", "timeout"}
+BOOL_FIELDS = {"headless", "auto_login", "telemetry", "tick_once"}
+
+
+def _coerce_runtime(key: str, value: Any) -> Any:
+    if key in INT_FIELDS:
+        return _to_int(key, value)
+    if key in FLOAT_FIELDS:
+        return _to_float(key, value)
+    if key in BOOL_FIELDS:
+        return _to_bool(key, value)
+    if key == "realtime_lanes":
+        return _parse_lanes(value)
+    if key == "proxy":
+        return str(value or "").strip()
+    return value
 
 
 def _apply_runtime(raw: dict[str, Any]) -> RuntimeConfig:
@@ -161,36 +211,51 @@ def _apply_runtime(raw: dict[str, Any]) -> RuntimeConfig:
         if key == "gap_seconds":
             seq = _as_list(value)
             if seq:
-                rt.gap_min = float(seq[0])
-                rt.gap_max = float(seq[-1])
+                rt.gap_min = _to_float("gap_seconds", seq[0])
+                rt.gap_max = _to_float("gap_seconds", seq[-1])
                 rt.gap_explicit = True
             continue
         if not hasattr(rt, key):
             continue
-        setattr(rt, key, value)
+        setattr(rt, key, _coerce_runtime(key, value))
     rt.engine = str(rt.engine).lower()
     rt.speed = str(rt.speed).lower()
-    rt.proxy = (rt.proxy or "").strip()
     return rt
+
+
+def _parse_course_ids(label: str, value: Any) -> list[int]:
+    """课程 id 列表：写错了要报错，不能静默变成空列表（空列表 = 自动发现全部课程）。"""
+    out: list[int] = []
+    for item in _as_list(value):
+        try:
+            out.append(int(item))
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(f"{label} 必须是课程 id 列表，收到 {item!r}") from exc
+    return out
 
 
 def _apply_account(raw: dict[str, Any], defaults: dict[str, Any], index: int) -> AccountConfig:
     merged: dict[str, Any] = {**defaults, **{k: v for k, v in raw.items() if v is not None}}
     name = str(merged.get("name") or f"acc{index:02d}").strip()
+    label = f"账号 {name}"
     acc = AccountConfig(
         name=name,
         username=str(merged.get("username") or "").strip(),
         password=str(merged.get("password") or ""),
-        enabled=bool(merged.get("enabled", True)),
+        enabled=_to_bool(f"{label} 的 enabled", merged.get("enabled", True)),
         note=str(merged.get("note") or ""),
-        course_ids=_to_int_list(merged.get("course_ids")),
+        course_ids=_parse_course_ids(f"{label} 的 course_ids", merged.get("course_ids")),
         semester_id=str(merged.get("semester_id") or ""),
         academic_year_id=str(merged.get("academic_year_id") or ""),
         speed=(str(merged["speed"]).lower() if merged.get("speed") else None),
-        target_percent=(int(merged["target_percent"]) if merged.get("target_percent") is not None else None),
+        target_percent=(
+            _to_int(f"{label} 的 target_percent", merged["target_percent"])
+            if merged.get("target_percent") is not None else None
+        ),
         engine=(str(merged["engine"]).lower() if merged.get("engine") else None),
         per_account_jobs=(
-            int(merged["per_account_jobs"]) if merged.get("per_account_jobs") is not None else None
+            _to_int(f"{label} 的 per_account_jobs", merged["per_account_jobs"])
+            if merged.get("per_account_jobs") is not None else None
         ),
         realtime_lanes=_parse_lanes(merged.get("realtime_lanes")),
     )

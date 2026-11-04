@@ -326,9 +326,28 @@ def cmd_schedule(app: AppConfig, args) -> int:
     return EXIT_ERROR
 
 
+def parse_only(value: str) -> set[int] | None:
+    """解析 --only：空 = 不限；写错必须报错，不能静默退化成「处理全部活动」。"""
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    picked: set[int] = set()
+    for part in raw.replace("，", ",").replace(" ", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if not part.isdigit():
+            raise ConfigError(
+                f"--only 只接受活动 ID（如 92918,92919），收到 {part!r}；"
+                "不想限制就整个省略这个参数"
+            )
+        picked.add(int(part))
+    return picked or None
+
+
 def cmd_run(app: AppConfig, args) -> int:
     accounts = pick_accounts(app, args)
-    only = {int(x) for x in args.only.replace(",", " ").split() if x.strip().isdigit()} or None
+    only = parse_only(args.only)
     for account in accounts:
         if args.course:
             account.course_ids = [int(c) for c in args.course]
@@ -372,6 +391,9 @@ def main(argv: list[str] | None = None) -> int:
     }
     try:
         return handlers[args.command](app, args)
+    except ConfigError as exc:
+        log.error("配置错误：%s", exc)
+        return EXIT_ERROR
     except LoginRequired as exc:
         log.error("%s", exc)
         return EXIT_NO_SESSION
