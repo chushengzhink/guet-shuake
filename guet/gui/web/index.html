@@ -93,6 +93,7 @@
   .tag.manual{background:#fff4e6;color:#b35c00}
   .tag.none{background:#f1f3f5;color:#868e96}
   .tag.wait{background:#f1f3f5;color:#adb5bd}
+  .tag.error{background:#fff0f0;color:#c92a2a}
   .chips{display:flex;flex-wrap:wrap;gap:8px}
   .chip{border:1px solid var(--line);border-radius:999px;padding:7px 13px;font-size:12.5px;
         cursor:pointer;background:#fff;transition:.15s;color:var(--ink)}
@@ -365,6 +366,9 @@ async function loadCourses(){
   }
 }
 function courseTags(c){
+  if (c.stats_error) {
+    return '<div class="tags"><span class="tag error">统计失败 · 点「刷新课程」重试</span></div>';
+  }
   if (c.auto === null || c.auto === undefined) {
     return '<div class="tags"><span class="tag wait">统计中…</span></div>';
   }

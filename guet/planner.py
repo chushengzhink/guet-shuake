@@ -120,6 +120,7 @@ def build_plan(
     modules: list[dict] | None = None,
     completeness: dict | None = None,
     name: str = "",
+    target: int = 100,
 ) -> CoursePlan:
     activities = activities if activities is not None else client.activities(course_id)
     reads = reads if reads is not None else client.activity_reads_for_user(course_id)
@@ -163,6 +164,18 @@ def build_plan(
             task.reason = "已完成"
             tasks.append(task)
             continue
+
+        # 目标低于 100% 时，已经达到目标的也算跳过 —— 和执行器里 VideoJob 的判定保持一致，
+        # 否则卡片说「还能刷 N 个」、实际跑起来一个都不动（review-97cb993 #7）
+        if target < 100:
+            current = 100.0 if state == "full" else float(
+                (read.get("data") or {}).get("completeness") or 0
+            )
+            if current >= target:
+                task.action = ACTION_SKIP
+                task.reason = f"已达目标 {target}%"
+                tasks.append(task)
+                continue
 
         if activity.get("published") is False:
             task.action = ACTION_SKIP

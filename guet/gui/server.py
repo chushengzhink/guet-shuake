@@ -195,10 +195,13 @@ class AppState:
             if self.run_id == run_id:      # 只结束自己那次运行，不覆盖新的
                 self.status = "idle"
 
-    def account_lock(self, name: str) -> threading.Lock:
-        """同一账号的浏览器操作串行化：刷新课程 / 登录 / 开始不要互相抢 profile。"""
+    def account_lock(self, name: str) -> threading.RLock:
+        """同一账号的浏览器操作串行化。
+
+        用 RLock：一个请求在锁内先取 client、再继续读取课程，会二次进入同一把锁。
+        """
         with self.lock:
-            return self.account_locks.setdefault(name, threading.Lock())
+            return self.account_locks.setdefault(name, threading.RLock())
 
     def drop_client(self, name: str) -> None:
         entry = self.clients.pop(name, None)
@@ -300,7 +303,9 @@ def _client_for(state: AppState, name: str):
         limiter = TokenBucket(app.runtime.rps, burst=max(1.0, app.runtime.rps))
         client, transport = scheduler.make_client(app, account, limiter, None)
         state.clients[name] = {"ts": time.time(), "client": client, "transport": transport}
-        return account, client, transport
+        # 资源由缓存持有：调用方 finally 里的 close() 必须是空操作，
+        # 否则「刚缓存就被关掉」，下次复用的是一个已关闭的 transport。
+        return account, client, _NoopClose()
 
 
 def _course_cache(state: AppState):
@@ -311,92 +316,104 @@ def _course_cache(state: AppState):
     return cache
 
 
-def _course_breakdown(cache, client, cid: int) -> dict:
-    """统计一门课里「还能自动刷」和「只能人工」的数量（课程卡上直接展示）。"""
-    activities = (cache.bundle(cid, client) or {}).get("activities") or []
-    reads = client.activity_reads_for_user(cid)
-    todo_video = todo_material = 0
-    manual = 0
-    for activity in activities:
-        atype = str(activity.get("type") or "")
-        try:
-            aid = int(activity.get("id"))
-        except (TypeError, ValueError):
-            continue
-        finished = (reads.get(aid) or {}).get("completeness") == "full"
-        if atype == "online_video":
-            todo_video += 0 if finished else 1
-        elif atype == "material":
-            todo_material += 0 if finished else 1
-        elif atype in MANUAL_TYPES:
-            manual += 0 if finished else 1      # 只算还没做的作业/考试
+def _course_breakdown(client, rt, cid: int, activities, reads, completeness,
+                      name: str, target: int) -> dict:
+    """用 build_plan 统计「可自动刷 / 只能人工」，保证和真正执行时判定一致。
+
+    自己按类型数一遍会漏掉「未发布」「无附件」「拿不到视频时长」这些规则，
+    卡片就会说「还能刷 2 个」而实际一个都不动（review-97cb993 #5）。
+    """
+    plan = build_plan(
+        client, cid, rt,
+        activities=activities, reads=reads, modules=[],
+        completeness=completeness, name=name, target=target,
+    )
+    summary = plan.summary()          # total / video / material / skip / manual
     return {
-        "todo_video": todo_video,
-        "todo_material": todo_material,
-        "manual": manual,
-        "auto": todo_video + todo_material,
+        "todo_video": summary["video"],
+        "todo_material": summary["material"],
+        "manual": summary["manual"],
+        "auto": summary["video"] + summary["material"],
     }
 
 
 def api_courses(state: AppState, body: dict) -> dict:
-    account, client, transport = _client_for(state, str(body.get("name") or ""))
+    app = state.app
+    if app is None:
+        raise ConfigError(state.error or "配置未就绪")
+    name = str(body.get("name") or "")
     try:
-        if not client.check_session():
-            raise LoginRequired(f"{account.name} 还没登录，先点「登录」")
-        rows = []
-        for course in client.my_courses(account.semester_id, account.academic_year_id):
-            try:
-                cid = int(course.get("id"))
-            except (TypeError, ValueError):
-                continue
-            completed = total = 0
-            percent = float(course.get("course_avg_completeness") or 0.0)
-            try:
-                data = client.my_completeness(cid)
-                result = data.get("completed_result") or {}
-                completed = int(result.get("total_completed") or 0)
-                total = int(result.get("total_activities") or 0)
-                percent = float(data.get("study_completeness") or percent)
-            except Exception:
-                pass
-            rows.append({
-                "id": cid,
-                "name": str(course.get("display_name") or course.get("name") or cid),
-                "code": str(course.get("course_code") or ""),
-                "completed": completed,
-                "total": total,
-                "percent": round(percent, 1),
-                "todo_video": None,      # None = 还没统计
-                "todo_material": None,
-                "manual": None,
-                "auto": None,
-            })
+        target = int(body.get("target") or app.runtime.target_percent or 100)
+    except (TypeError, ValueError):
+        target = 100
+    account_obj = app.account(name)
 
-        # 并发补构成统计：activities 走缓存，第二次刷新几乎是瞬间
-        cache = _course_cache(state)
-        if rows:
-            from concurrent.futures import ThreadPoolExecutor
+    # 整个读取过程持锁：期间登录请求会排队，不会把正在用的 client 关掉
+    with state.account_lock(account_obj.name):
+        account, client, transport = _client_for(state, account_obj.name)
+        try:
+            if not client.check_session():
+                raise LoginRequired(f"{account.name} 还没登录，先点「登录」")
+            rows = []
+            completeness_cache: dict[int, dict] = {}
+            for course in client.my_courses(account.semester_id, account.academic_year_id):
+                try:
+                    cid = int(course.get("id"))
+                except (TypeError, ValueError):
+                    continue
+                completed = total = 0
+                percent = float(course.get("course_avg_completeness") or 0.0)
+                data = {}
+                try:
+                    data = client.my_completeness(cid) or {}
+                    result = data.get("completed_result") or {}
+                    completed = int(result.get("total_completed") or 0)
+                    total = int(result.get("total_activities") or 0)
+                    percent = float(data.get("study_completeness") or percent)
+                except Exception:
+                    pass
+                completeness_cache[cid] = data
+                rows.append({
+                    "id": cid,
+                    "name": str(course.get("display_name") or course.get("name") or cid),
+                    "code": str(course.get("course_code") or ""),
+                    "completed": completed,
+                    "total": total,
+                    "percent": round(percent, 1),
+                    "todo_video": None,      # None = 未知（统计中或失败）
+                    "todo_material": None,
+                    "manual": None,
+                    "auto": None,
+                    "stats_error": False,
+                })
 
-            with ThreadPoolExecutor(max_workers=3, thread_name_prefix="course") as pool:
-                futures = {pool.submit(_course_breakdown, cache, client, row["id"]): row
-                           for row in rows}
-                for future, row in futures.items():
-                    try:
-                        row.update(future.result(timeout=60))
-                    except Exception as exc:  # 单门课统计失败不影响列表
-                        log.debug("统计课程 %s 构成失败：%s", row["id"], exc)
-                        row.update({"todo_video": 0, "todo_material": 0, "manual": 0, "auto": 0})
+            cache = _course_cache(state)
+            for row in rows:
+                cid = row["id"]
+                try:
+                    bundle = cache.bundle(cid, client) or {}
+                    activities = bundle.get("activities") or []
+                    reads = client.activity_reads_for_user(cid)
+                    # 串行执行：browser 引擎的 Playwright 上下文只能由当前线程使用，
+                    # 放到线程池里会直接报 "Cannot switch to a different thread"
+                    row.update(_course_breakdown(
+                        client, app.runtime, cid, activities, reads,
+                        completeness_cache.get(cid) or {}, row["name"], target,
+                    ))
+                except Exception as exc:
+                    log.debug("统计课程 %s 构成失败：%s", cid, exc)
+                    row["stats_error"] = True      # 保留未知，不要伪装成 0
 
-        # 平台口径里还有「其它类型」的未完成活动（考试常不在 activities 列表里）
-        for row in rows:
-            remain = max(0, int(row.get("total") or 0) - int(row.get("completed") or 0))
-            known = int(row.get("auto") or 0) + int(row.get("manual") or 0)
-            row["other"] = max(0, remain - known)
-        return {"ok": True, "courses": rows, "account": account.name}
-    finally:
-        transport.close()
-
-
+            for row in rows:
+                if row.get("stats_error"):
+                    row["other"] = None
+                    continue
+                remain = max(0, int(row.get("total") or 0) - int(row.get("completed") or 0))
+                known = int(row.get("auto") or 0) + int(row.get("manual") or 0)
+                row["other"] = max(0, remain - known)
+            return {"ok": True, "courses": rows, "account": account.name, "target": target}
+        finally:
+            transport.close()          # 缓存命中时是 NoopClose
 def api_plan(state: AppState, body: dict) -> dict:
     app = state.app
     if app is None:
@@ -424,9 +441,11 @@ def api_bench(state: AppState, body: dict) -> dict:
     app = state.app
     if app is None:
         raise ConfigError(state.error or "配置未就绪")
-    account = app.account(str(body.get("name") or ""))
+    account_obj = app.account(str(body.get("name") or ""))
     course_ids = [int(c) for c in (body.get("courses") or [])]
-    _, client, transport = _client_for(state, account.name)
+    lock = state.account_lock(account_obj.name)
+    lock.acquire()
+    account, client, transport = _client_for(state, account_obj.name)
     try:
         if not client.check_session():
             raise LoginRequired(f"{account.name} 还没登录，先点「登录」")
@@ -450,6 +469,7 @@ def api_bench(state: AppState, body: dict) -> dict:
         }
     finally:
         transport.close()
+        lock.release()
 
 
 def api_start(state: AppState, body: dict) -> dict:
@@ -614,6 +634,8 @@ def api_logs(state: AppState, after: int) -> dict:
 
 
 def api_quit(state: AppState) -> dict:
+    for name in list(state.clients):
+        state.drop_client(name)
     cancel.request()
     state.shutdown.set()          # 通知启动器退出（F12）
     server = state.server

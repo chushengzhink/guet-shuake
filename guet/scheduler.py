@@ -9,12 +9,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
+from . import cancel
 from .browser import BrowserUnavailable, configure_slots
 from .client import TronClassClient
 from .config import AccountConfig, AppConfig
 from .runner import (
     STATUS_DONE,
     STATUS_FAILED,
+    STATUS_PENDING,
     AccountRunner,
     StateStore,
     TaskResult,
@@ -242,6 +244,13 @@ def _run_one_locked(
                 break
         outcome.after = _completeness(holder["client"], course_ids)
         outcome.requests = runner.request_count
+        # 用户取消不是成功：还有待续项且取消标记被置位时，给账号一个明确终态。
+        # （tick_once 的正常分批执行不会被误判，因为那时没有人请求取消）
+        pending_items = sum(
+            1 for items in outcome.results.values() for r in items if r.status == STATUS_PENDING
+        )
+        if pending_items and cancel.requested() and not outcome.error:
+            outcome.error = f"已取消，{pending_items} 项待续"
         # R03：任何课程异常都必须算失败，不能因为已收集的结果里「没有 failed」就报成功
         outcome.ok = not outcome.error and all(
             r.status != STATUS_FAILED for items in outcome.results.values() for r in items
