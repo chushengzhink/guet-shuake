@@ -194,6 +194,39 @@ accounts:
 
 多账号并行时总耗时 ≈ 最慢的那个账号；`--per-account-jobs 3` 可再压到 1/3 左右。
 
+### 平台侧到底校验什么（实测）
+
+| 校验点 | 是否校验 | 证据 |
+|---|---|---|
+| 单段跨度 ≤ 125 秒 | ✅ 硬校验 | 超了返回 `400 ... maximum is 125s` |
+| 两次上报之间的真实间隔 | ❌ 不校验 | 563.9 秒的视频 5 段、17 秒刷完，服务端照样给 100% |
+| 上报区间是否连续递增 | ❌ 不校验 | `probe` 档直接按 125s 网格补齐即可 |
+| `statistics` 埋点的 `ts` | 客户端字段 | `ts/start_at/end_at` 都是前端自己填的，服务端一般只用于报表 |
+
+**结论：进度只认「区间并集」，不认时间。** 所以最快的做法就是顶格 125s 连续上报：
+
+```powershell
+python run.py run --all --speed probe --gap 0.5     # 整门课 1~2 分钟
+```
+
+`--gap` 是段间隔（秒），越小越快；请求密度 = 1/gap，别同时把 `--rps` 开太高。
+
+#### realtime 档还留着干什么
+
+平台不校验真实时间，所以它**不会更快，只会更慢**。它只在两种情况下有意义：
+
+1. 你想让 `statistics` 埋点的时间线和真实播放一致（教师端"学习时长/行为轨迹"报表）；
+2. 想在请求密度上低调一点（每段等真实时长，天然不会密集）。
+
+```powershell
+python run.py bench --account acc01 --course 29066         # 实测延迟 + 推荐并行路数
+python run.py run --all --speed realtime --lanes auto      # 让它自己算
+python run.py run --all --speed realtime --lanes 8         # 或直接指定数字
+python run.py run --all --speed realtime --lanes all       # 有多少视频开多少路
+```
+
+实测参考（校园网关 RTT ≈335ms，21 个视频共 4h53m）：省心 3 路 ≈ 1h37m、推荐 5 路 ≈ 59m、极速 16 路 ≈ 20m（被最长单个视频 19m54s 卡住）。
+
 单账号 `normal` 大约 **5~10 分钟**（≈180 次请求）；`--per-account-jobs 3` 约 3 分钟。
 
 先探针再决定档位：

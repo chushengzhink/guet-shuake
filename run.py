@@ -20,6 +20,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from guet import report, scheduler, session  # noqa: E402
+from guet.benchmark import measure, plan_scale, recommend  # noqa: E402
 from guet.browser import BrowserUnavailable, configure_slots  # noqa: E402
 from guet.client import SessionExpired, TronClassError  # noqa: E402
 from guet.config import AppConfig, ConfigError, load_config  # noqa: E402
@@ -84,12 +85,23 @@ def build_parser() -> argparse.ArgumentParser:
     probe.add_argument("--activity", type=int, required=True)
     probe.add_argument("--course", type=int, default=None)
 
+    bench = sub.add_parser("bench", help="性能自检：实测延迟并推荐 realtime 并行路数")
+    add_common(bench, all_flag=False)
+    bench.add_argument("--course", type=int, required=True)
+    bench.add_argument("--eta", type=float, default=None, help="希望多少分钟刷完（可选）")
+    bench.add_argument("--rounds", type=int, default=5, help="延迟采样次数")
+
     run = sub.add_parser("run", help="开始刷课")
     add_common(run)
     run.add_argument("--course", type=int, action="append", default=[], help="指定课程 id，可重复")
     run.add_argument("--only", default="", help="只处理这些活动 id，逗号分隔")
-    run.add_argument("--speed", choices=["probe", "normal", "human"], default=None)
-    run.add_argument("--chunk-seconds", type=int, default=None, help="normal 档的段长秒数")
+    run.add_argument("--speed", choices=["probe", "normal", "human", "realtime"], default=None)
+    run.add_argument("--chunk-seconds", type=int, default=None, help="normal/realtime 档的段长秒数")
+    run.add_argument("--lanes", type=str, default=None,
+                     help="realtime 并行路数：数字 / all（有多少开多少）/ auto（实测推荐）")
+    run.add_argument("--eta", type=float, default=None, help="realtime 希望多少分钟刷完（配合 --lanes auto）")
+    run.add_argument("--gap", type=float, default=None,
+                     help="覆盖段间隔秒数（如 0.5 极速刷；默认跟随档位）")
     run.add_argument("--target", dest="target_percent", type=int, default=None, help="目标百分比，默认 100")
     run.add_argument("--engine", choices=["http", "browser"], default=None)
     run.add_argument("--headless", action="store_true", default=None, help="无头运行（默认无头）")
@@ -124,12 +136,34 @@ def apply_overrides(app: AppConfig, args) -> None:
                 for acc in app.accounts:  # 命令行优先于账号级覆盖
                     setattr(acc, {"speed": "speed", "engine": "engine",
                                   "target_percent": "target_percent"}[attr], None)
+    lanes = getattr(args, "lanes", None)
+    if lanes is not None:
+        rt.realtime_lanes = _parse_lanes_arg(lanes)
+        for acc in app.accounts:
+            acc.realtime_lanes = None
+    eta = getattr(args, "eta", None)
+    if eta:
+        rt.realtime_eta_seconds = int(float(eta) * 60)
+    gap = getattr(args, "gap", None)
+    if gap is not None:
+        rt.gap_min = rt.gap_max = max(0.0, float(gap))
+        rt.gap_explicit = True
     if getattr(args, "no_telemetry", False):
         rt.telemetry = False
     if getattr(args, "headed", False):
         rt.headless = False
     if getattr(args, "headless", None):
         rt.headless = True
+
+
+def _parse_lanes_arg(value: str):
+    text = str(value).strip().lower()
+    if text in {"auto", "all", "max"}:
+        return text
+    try:
+        return int(text)
+    except ValueError:
+        raise ConfigError(f"--lanes 只接受数字、all 或 auto，收到 {value!r}")
 
 
 def _load(args) -> AppConfig:
@@ -191,6 +225,30 @@ def cmd_probe(app: AppConfig, args) -> int:
     return EXIT_OK
 
 
+def cmd_bench(app: AppConfig, args) -> int:
+    account = pick_accounts(app, args)[0]
+    client, transport = _make_client(app, account)
+    try:
+        if not client.check_session():
+            raise LoginRequired(f"{account.name} 会话不可用，先跑 login")
+        plan = build_plan(client, int(args.course), app.runtime)
+        videos = [t for t in plan.tasks if t.action == "video"]
+        count, total, longest = plan_scale(videos)
+        bench = measure(client, rounds=args.rounds)
+        eta_seconds = (float(args.eta) * 60 if args.eta else float(app.runtime.realtime_eta_seconds or 0))
+        advice = recommend(
+            bench, count, total,
+            max_lanes=int(app.runtime.realtime_max_lanes),
+            eta_seconds=eta_seconds,
+            longest_seconds=longest,
+        )
+        report.info(advice.render())
+        report.info(f"\n写入配置：realtime_lanes: {advice.lanes}（或 auto，让每次运行自己实测再算）")
+        return EXIT_OK
+    finally:
+        transport.close()
+
+
 def cmd_run(app: AppConfig, args) -> int:
     accounts = pick_accounts(app, args)
     only = {int(x) for x in args.only.replace(",", " ").split() if x.strip().isdigit()} or None
@@ -224,6 +282,7 @@ def main(argv: list[str] | None = None) -> int:
         "status": cmd_status,
         "list": cmd_list,
         "probe": cmd_probe,
+        "bench": cmd_bench,
         "run": cmd_run,
     }
     try:

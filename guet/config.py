@@ -17,7 +17,7 @@ DEFAULT_UA = (
 )
 
 ENGINES = ("http", "browser")
-SPEEDS = ("probe", "normal", "human")
+SPEEDS = ("realtime", "probe", "normal", "human")
 _NAME_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,40}$")
 
 
@@ -40,6 +40,9 @@ class RuntimeConfig:
     target_percent: int = 100
     telemetry: bool = True
     sub_course_id: int = 0
+    realtime_lanes: Any = 8          # 数字 / "auto"（按实测推荐）/ 0 或 "all"（有多少开多少）
+    realtime_max_lanes: int = 16
+    realtime_eta_seconds: int = 0    # 期望多久刷完（秒），0 = 默认 1 小时目标
     account_jobs: int = 4
     per_account_jobs: int = 1
     rps: float = 3.0
@@ -73,6 +76,7 @@ class AccountConfig:
     target_percent: int | None = None
     engine: str | None = None
     per_account_jobs: int | None = None
+    realtime_lanes: Any = None
 
     def effective_speed(self, rt: RuntimeConfig) -> str:
         return (self.speed or rt.speed).lower()
@@ -185,8 +189,26 @@ def _apply_account(raw: dict[str, Any], defaults: dict[str, Any], index: int) ->
         per_account_jobs=(
             int(merged["per_account_jobs"]) if merged.get("per_account_jobs") is not None else None
         ),
+        realtime_lanes=_parse_lanes(merged.get("realtime_lanes")),
     )
     return acc
+
+
+def _parse_lanes(value: Any) -> Any:
+    """`8` / `"8"` / `"auto"` / `"all"` / 0 都允许。"""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    text = str(value).strip().lower()
+    if text in {"auto", "all", "max"}:
+        return text
+    try:
+        return int(text)
+    except ValueError:
+        return text
 
 
 def _read_yaml(path: Path, required: bool) -> dict[str, Any]:
@@ -246,6 +268,9 @@ def validate(app: AppConfig) -> None:
         raise ConfigError("chunk_seconds 不能为负")
     if rt.gap_min > rt.gap_max:
         raise ConfigError("gap_seconds 下限不能大于上限")
+    if int(rt.realtime_max_lanes) < 1:
+        raise ConfigError("realtime_max_lanes 至少为 1")
+    _check_lanes(rt.realtime_lanes, "realtime_lanes")
     if not rt.base_url.startswith("http"):
         raise ConfigError("base_url 必须是 http(s) 地址")
 
@@ -264,6 +289,20 @@ def validate(app: AppConfig) -> None:
             raise ConfigError(f"账号 {acc.name} 的 engine 不合法：{acc.engine}")
         if acc.target_percent is not None and not 1 <= acc.target_percent <= 100:
             raise ConfigError(f"账号 {acc.name} 的 target_percent 必须在 1~100")
+        _check_lanes(acc.realtime_lanes, f"账号 {acc.name} 的 realtime_lanes")
 
     if not app.enabled_accounts():
         raise ConfigError("accounts.yaml 里没有 enabled: true 的账号")
+
+
+def _check_lanes(value: Any, label: str) -> None:
+    if value is None:
+        return
+    if isinstance(value, int):
+        if value < 0 or value > 256:
+            raise ConfigError(f"{label} 必须是 0~256 的整数，或 auto/all")
+        return
+    text = str(value).strip().lower()
+    if text in {"auto", "all", "max"}:
+        return
+    raise ConfigError(f"{label} 只接受数字、auto 或 all，收到 {value!r}")

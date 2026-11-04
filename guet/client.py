@@ -26,6 +26,37 @@ STATS_JWT_RE = re.compile(r'mgsJwt:\s*"([^"]+)"')
 STATS_UID_RE = re.compile(r'userId:\s*"([^"]*)"')
 STATS_ORG_RE = re.compile(r'orgId:\s*"([^"]*)"')
 STATS_DEP_RE = re.compile(r'departmentId:\s*"([^"]*)"')
+MAX_SPAN_RE = re.compile(r"maximum is (\d+)")
+
+# 服务端硬限制（实测 400 报文）：单次上报跨度最多 125 秒
+# {"message":"Log failed, caused： The set time duration（538s） is too long, maximum is 125s"}
+SERVER_MAX_SPAN_DEFAULT = 125
+
+
+def parse_activity_read(read: dict | None) -> tuple[str, int, list]:
+    """把 activity-read 的响应解析成 (state, percent, ranges)。"""
+    if not read:
+        return "", 0, []
+    data = read.get("data") or {}
+    state = str(read.get("completeness") or "")
+    try:
+        percent = int(float(data.get("completeness") or 0))
+    except (TypeError, ValueError):
+        percent = 0
+    ranges = data.get("ranges") or []
+    return state, percent, ranges
+
+
+def parse_max_span(message: str) -> int | None:
+    """从 400 报文里解析服务端允许的单段上限（秒）。"""
+    match = MAX_SPAN_RE.search(message or "")
+    if not match:
+        return None
+    try:
+        value = int(match.group(1))
+    except (TypeError, ValueError):
+        return None
+    return value if 1 <= value <= 3600 else None
 
 
 class TronClassError(RuntimeError):

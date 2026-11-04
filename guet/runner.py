@@ -6,13 +6,20 @@
 
 from __future__ import annotations
 
-import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from .client import SessionExpired, TronClassClient, TronClassError
+from .benchmark import measure, plan_scale, recommend
+from .client import (
+    SERVER_MAX_SPAN_DEFAULT,
+    SessionExpired,
+    TronClassClient,
+    TronClassError,
+    parse_activity_read,
+    parse_max_span,
+)
 from .config import AccountConfig, AppConfig, RuntimeConfig
 from .planner import (
     ACTION_MANUAL,
@@ -24,18 +31,15 @@ from .planner import (
     build_plan,
 )
 from .progress import coverage_percent, covered_seconds, merge_ranges, plan_chunks
+from .realtime import run_lanes
 from .telemetry import Telemetry
 from .transport import TransportError
 from .util import TokenBucket, human_seconds, jitter_sleep, read_json, atomic_write_json, setup_logger
 
 log = setup_logger("runner")
 
-# 服务端硬限制（实测 400 报文）：单次上报跨度最多 125 秒
-# {"message":"Log failed, caused： The set time duration（538s） is too long, maximum is 125s"}
-SERVER_MAX_SPAN_DEFAULT = 125
-MAX_SPAN_RE = re.compile(r"maximum is (\d+)")
-
 SPEED_PROFILES: dict[str, dict[str, Any]] = {
+    "realtime": {"chunk": 120, "gap": None},   # 按真实时间推进，间隔 = 段长
     "probe": {"chunk": SERVER_MAX_SPAN_DEFAULT, "gap": (0.3, 0.8)},
     "normal": {"chunk": 120, "gap": (1.5, 3.0)},
     "human": {"chunk": 30, "gap": (5.0, 15.0)},
@@ -46,6 +50,18 @@ STATUS_FAILED = "failed"
 STATUS_SKIPPED = "skipped"
 STATUS_MANUAL = "manual"
 STATUS_DRYRUN = "dry-run"
+
+
+def resolve_lanes(value: Any, available: int) -> int:
+    """realtime 的并行路数：<=0 / 'all' / 非法值 = 有多少视频就开多少路。"""
+    available = max(1, int(available))
+    try:
+        lanes = int(value)
+    except (TypeError, ValueError):
+        return available
+    if lanes <= 0:
+        return available
+    return max(1, min(lanes, available))
 
 
 @dataclass
@@ -124,29 +140,13 @@ def _video_percent(resp: dict) -> int | None:
 
 
 def _server_max_span(message: str) -> int | None:
-    """从 400 报文里解析服务端允许的单段上限（秒）。"""
-    match = MAX_SPAN_RE.search(message or "")
-    if not match:
-        return None
-    try:
-        value = int(match.group(1))
-    except (TypeError, ValueError):
-        return None
-    return value if 1 <= value <= 3600 else None
+    """兼容旧名：真正的实现在 client.parse_max_span。"""
+    return parse_max_span(message)
 
 
 def _read_state(read: dict | None) -> tuple[str, int, list]:
-    if not read:
-        return "", 0, []
-    data = read.get("data") or {}
-    state = str(read.get("completeness") or "")
-    percent = 0
-    try:
-        percent = int(float(data.get("completeness") or 0))
-    except (TypeError, ValueError):
-        percent = 0
-    ranges = data.get("ranges") or []
-    return state, percent, ranges
+    """兼容旧名：真正的实现在 client.parse_activity_read。"""
+    return parse_activity_read(read)
 
 
 class VideoJob:
@@ -479,12 +479,12 @@ class AccountRunner:
     def run_course(self, cid: int, only: set[int] | None = None, dry_run: bool = False) -> list[TaskResult]:
         speed_name = self.account.effective_speed(self.rt)
         speed = SPEED_PROFILES.get(speed_name, SPEED_PROFILES["normal"])
-        if speed_name == "normal" and self.rt.chunk_seconds:
-            chunk: int | None = int(self.rt.chunk_seconds)   # normal：允许配置覆盖段长
+        if speed_name in ("normal", "realtime") and self.rt.chunk_seconds:
+            chunk: int | None = int(self.rt.chunk_seconds)   # 这两种档位允许配置覆盖段长
         else:
             chunk = int(speed["chunk"])
         chunk = min(chunk, self.max_span)                     # 服务端上限（默认 125s）
-        gap = tuple(self.rt.gap) if self.rt.gap_explicit else tuple(speed["gap"])
+        gap = tuple(self.rt.gap) if self.rt.gap_explicit else tuple(speed["gap"] or (0.0, 0.0))
         target = self.account.effective_target(self.rt)
 
         bundle: dict = {}
@@ -531,8 +531,14 @@ class AccountRunner:
 
         started = time.time()
         results: list[TaskResult] = []
-        results.extend(self._run_videos([t for t in tasks if t.action == ACTION_VIDEO], chunk, gap, target))
-        results.extend(self._run_materials([t for t in tasks if t.action == ACTION_MATERIAL], target))
+        videos = [t for t in tasks if t.action == ACTION_VIDEO]
+        materials = [t for t in tasks if t.action == ACTION_MATERIAL]
+        if speed_name == "realtime":
+            lanes = self._resolve_realtime_lanes(videos)
+            results.extend(run_lanes(self, videos, chunk, target, lanes))
+        else:
+            results.extend(self._run_videos(videos, chunk, gap, target))
+        results.extend(self._run_materials(materials, target))
 
         done = sum(1 for r in results if r.status == STATUS_DONE)
         self.log.info(
@@ -544,6 +550,29 @@ class AccountRunner:
         return results
 
     # ------------------------------------------------------------------ 视频
+    def _resolve_realtime_lanes(self, videos: list[ActivityTask]) -> int:
+        """realtime 档的并行路数：数字 / all / auto（实测推荐）。"""
+        raw = (
+            self.account.realtime_lanes
+            if self.account.realtime_lanes is not None
+            else self.rt.realtime_lanes
+        )
+        count, total_seconds, longest = plan_scale(videos)
+        if isinstance(raw, str) and raw.strip().lower() == "auto":
+            self.log.info("  检测网络与任务规模，自动推荐并行路数……")
+            bench = measure(self.client)
+            advice = recommend(
+                bench,
+                count,
+                total_seconds,
+                max_lanes=int(self.rt.realtime_max_lanes),
+                eta_seconds=float(self.rt.realtime_eta_seconds or 0),
+                longest_seconds=longest,
+            )
+            self.log.info("%s", advice.render())
+            return advice.lanes
+        return resolve_lanes(raw, count)
+
     def _run_videos(self, tasks: list[ActivityTask], chunk: int | None,
                     gap: tuple[float, float], target: int) -> list[TaskResult]:
         if not tasks:

@@ -22,6 +22,12 @@ target_percent: 100     # 视频达标百分比，默认刷满；课程只要求
 telemetry: true         # 是否同步 /statistics 埋点（更像真人，可关）
 sub_course_id: 0        # 子课程时改这里
 
+# realtime 档的并行路数：数字 / auto（实测推荐）/ 0 或 all（有多少视频开多少路）
+# 平台不校验真实时间，realtime 只是"更低调"，不更快；想快用 probe + 小 gap
+realtime_lanes: auto
+realtime_max_lanes: 16     # 路数上限（= 一次最多开几个视频）
+realtime_eta_seconds: 0    # 期望多久刷完（秒），0 = 按 1 小时目标算路数
+
 # 并发与限速
 account_jobs: 4         # 同时跑几个账号
 per_account_jobs: 1     # 单账号内并发写；默认 1，session cookie 每响应轮换，调高有顶号风险

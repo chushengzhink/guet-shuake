@@ -22,7 +22,7 @@ from .planner import (
     CoursePlan,
     build_plan,
 )
-from .runner import SPEED_PROFILES
+from .runner import SPEED_PROFILES, resolve_lanes
 from .session import LoginRequired, SessionError
 from .transport import TransportError
 from .util import TokenBucket, human_seconds, setup_logger
@@ -69,9 +69,20 @@ def parse_selection(text: str, total: int) -> list[int] | None:
     return sorted(picked)
 
 
-def estimate_seconds(plan: CoursePlan, rt: RuntimeConfig, account) -> float:
-    """粗略估算一个账号刷完这门课要多久。"""
+def estimate_seconds(plan: CoursePlan, rt: RuntimeConfig, account, lanes: int | None = None) -> float:
+    """粗略估算一个账号刷完这门课要多久（realtime 档按路数折算）。"""
     speed = account.effective_speed(rt)
+    if speed == "realtime":
+        videos = [t for t in plan.tasks if t.action == ACTION_VIDEO]
+        if not videos:
+            return 0.0
+        total = sum(max(1, t.duration) for t in videos)
+        longest = max(max(1, t.duration) for t in videos)
+        if lanes is None:
+            raw = account.realtime_lanes if account.realtime_lanes is not None else rt.realtime_lanes
+            lanes = resolve_lanes(raw, len(videos))
+        return max(float(longest), math.ceil(total / max(1, int(lanes))))
+
     profile = SPEED_PROFILES.get(speed, SPEED_PROFILES["normal"])
     if speed == "normal":
         chunk = int(rt.chunk_seconds or profile["chunk"])
@@ -79,7 +90,7 @@ def estimate_seconds(plan: CoursePlan, rt: RuntimeConfig, account) -> float:
         chunk = None
     else:
         chunk = int(profile["chunk"])
-    gap = tuple(rt.gap) if rt.gap_explicit else tuple(profile["gap"])
+    gap = tuple(rt.gap) if rt.gap_explicit else tuple(profile["gap"] or (0.0, 0.0))
     parallel = max(1, int(account.per_account_jobs or rt.per_account_jobs))
     gap_avg = (sum(gap) / 2.0) / parallel
 
@@ -329,19 +340,56 @@ def show_plans(plans: Sequence[CoursePlan], rt: RuntimeConfig, account) -> None:
             print(f"{info['name']}: 视频 {info['videos']} / 资料 {info['materials']} / 预计 {info['eta']:.0f}s")
 
 
-def choose_speed(rt: RuntimeConfig, ask: AskFn) -> tuple[str, int]:
+def parse_lanes_input(text: str, default: int) -> int:
+    """`8` / `all` / 空。all 返回 0（= 有多少视频开多少路）。"""
+    raw = (text or "").strip().lower()
+    if not raw:
+        return default
+    if raw in {"all", "max", "全部"}:
+        return 0
+    if raw.isdigit():
+        value = int(raw)
+        return value if value > 0 else 0
+    return default
+
+
+def choose_speed(rt: RuntimeConfig, ask: AskFn, bench_provider=None) -> tuple[str, int, int | None]:
+    """返回 (speed, target_percent, lanes)。"""
     report.info(
         "节奏：\n"
-        "  1) probe  整段一次上报，最快（先试水用）\n"
-        "  2) normal 120s 一段，默认\n"
-        "  3) human  30s 一段 + 长间隔，最像人"
+        "  1) probe    125s 一段顶格上报，最快（实测 5 段 17 秒刷完一个 9 分钟视频）\n"
+        "  2) normal   120s 一段，间隔 1.5~3s，默认\n"
+        "  3) human    30s 一段 + 长间隔，慢但请求密度低\n"
+        "  4) realtime 按真实时间推进，多路并行；平台不校验真实时间，这个只是更低调，不快"
     )
-    answer = ask("选节奏（1/2/3 或 p/n/h，回车=2）: ").strip().lower()
-    speed = {"1": "probe", "p": "probe", "probe": "probe",
-             "3": "human", "h": "human", "human": "human"}.get(answer, "normal")
+    answer = ask("选节奏（1/2/3/4 或 p/n/h/r，回车=2）: ").strip().lower()
+    mapping = {
+        "1": "probe", "p": "probe", "probe": "probe",
+        "3": "human", "h": "human", "human": "human",
+        "4": "realtime", "r": "realtime", "realtime": "realtime", "实时": "realtime",
+    }
+    speed = mapping.get(answer, "normal")
     target_raw = ask("目标百分比（回车=100，课程只要求 80% 可填 80）: ").strip()
     target = int(target_raw) if target_raw.isdigit() and 1 <= int(target_raw) <= 100 else rt.target_percent
-    return speed, target
+    lanes: int | None = None
+    if speed == "realtime":
+        lanes = _choose_lanes(rt, ask, bench_provider)
+    return speed, target, lanes
+
+
+def _choose_lanes(rt: RuntimeConfig, ask: AskFn, bench_provider) -> int:
+    suggestion = rt.realtime_lanes if isinstance(rt.realtime_lanes, int) else 8
+    suggestion = int(suggestion) if int(suggestion) > 0 else 8
+    if bench_provider is not None:
+        report.info("先量一下网络和任务规模……")
+        try:
+            advice = bench_provider()
+            report.info(advice.render())
+            suggestion = advice.lanes
+        except Exception as exc:  # 自检失败不影响主流程
+            report.info(f"性能自检失败（{exc}），先用默认 {suggestion} 路")
+    raw = ask(f"同时刷几路（回车={suggestion}，all=有多少视频开多少路）: ")
+    return parse_lanes_input(raw, suggestion)
 
 
 # ------------------------------------------------------------------ 主流程
@@ -413,6 +461,21 @@ def run_wizard(
                     plan = build_plan(preview.client, cid, app.runtime, name=name)
                     plans.append(plan)
                 show_plans(plans, app.runtime, accounts[0])
+
+                def bench_provider():
+                    from .benchmark import measure, plan_scale, recommend
+
+                    videos = [t for p in plans for t in p.tasks if t.action == ACTION_VIDEO]
+                    count, total, longest = plan_scale(videos)
+                    bench = measure(preview.client)
+                    return recommend(
+                        bench, count, total,
+                        max_lanes=int(app.runtime.realtime_max_lanes),
+                        eta_seconds=float(app.runtime.realtime_eta_seconds or 0),
+                        longest_seconds=longest,
+                    )
+
+                speed, target, lanes = choose_speed(app.runtime, safe_ask, bench_provider)
         except LoginRequired as exc:
             report.info(f"[red]{exc}[/red]")
             return 2
@@ -420,13 +483,16 @@ def run_wizard(
             report.info(f"[red]拉课程失败：{exc}[/red]")
             return 1
 
-        speed, target = choose_speed(app.runtime, safe_ask)
         app.runtime.speed = speed
         app.runtime.target_percent = target
+        if lanes is not None:
+            app.runtime.realtime_lanes = lanes
         for account in accounts:
             account.course_ids = list(picked_ids)
             account.speed = speed
             account.target_percent = target
+            if lanes is not None:
+                account.realtime_lanes = lanes
 
         if not ask_yes(f"开始刷这 {len(picked_ids)} 门课？(Y/n)", True):
             report.info("已取消，没有发出任何写请求（重新跑 start.py 可以再选）。")
