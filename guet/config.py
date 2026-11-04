@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -142,22 +143,44 @@ def _as_list(value: Any) -> list[Any]:
 
 
 def _to_int(label: str, value: Any) -> int:
-    """统一把配置项转成 int；非法值一律变成带字段名的 ConfigError。"""
+    """统一把配置项转成 int；非法值一律变成带字段名的 ConfigError。
+
+    不做静默截断：`29066.9` / `"29066.9"` 直接报错——课程 ID 被截断会指向另一门课。
+    """
     if isinstance(value, bool):
         raise ConfigError(f"{label} 必须是整数，收到布尔值 {value!r}")
-    try:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ConfigError(f"{label} 必须是有限整数，收到 {value!r}")
+        if not value.is_integer():
+            raise ConfigError(f"{label} 必须是整数，收到 {value!r}")
         return int(value)
-    except (TypeError, ValueError) as exc:
-        raise ConfigError(f"{label} 必须是整数，收到 {value!r}") from exc
+    text = str(value).strip()
+    body = text[1:] if text[:1] in "+-" else text
+    if body.isdigit():
+        return int(text)
+    raise ConfigError(f"{label} 必须是整数，收到 {value!r}")
 
 
 def _to_float(label: str, value: Any) -> float:
+    """转成 float，并拒绝 nan / inf（`.nan`、`.inf` 在 YAML 里是合法字面量）。"""
     if isinstance(value, bool):
         raise ConfigError(f"{label} 必须是数字，收到布尔值 {value!r}")
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError) as exc:
         raise ConfigError(f"{label} 必须是数字，收到 {value!r}") from exc
+    if not math.isfinite(number):
+        raise ConfigError(f"{label} 必须是有限数字，收到 {value!r}")
+    return number
+
+
+def _to_str(label: str, value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    raise ConfigError(f"{label} 必须是字符串，收到 {value!r}")
 
 
 _TRUE = {"true", "yes", "on", "1", "是"}
@@ -185,6 +208,10 @@ INT_FIELDS = {
 }
 FLOAT_FIELDS = {"rps", "global_rps", "timeout"}
 BOOL_FIELDS = {"headless", "auto_login", "telemetry", "tick_once"}
+STR_FIELDS = {
+    "base_url", "engine", "speed", "proxy", "user_agent",
+    "profile_dir", "state_dir", "log_dir",
+}
 
 
 def _coerce_runtime(key: str, value: Any) -> Any:
@@ -194,10 +221,10 @@ def _coerce_runtime(key: str, value: Any) -> Any:
         return _to_float(key, value)
     if key in BOOL_FIELDS:
         return _to_bool(key, value)
+    if key in STR_FIELDS:
+        return _to_str(key, value)
     if key == "realtime_lanes":
         return _parse_lanes(value)
-    if key == "proxy":
-        return str(value or "").strip()
     return value
 
 
@@ -227,10 +254,7 @@ def _parse_course_ids(label: str, value: Any) -> list[int]:
     """课程 id 列表：写错了要报错，不能静默变成空列表（空列表 = 自动发现全部课程）。"""
     out: list[int] = []
     for item in _as_list(value):
-        try:
-            out.append(int(item))
-        except (TypeError, ValueError) as exc:
-            raise ConfigError(f"{label} 必须是课程 id 列表，收到 {item!r}") from exc
+        out.append(_to_int(label, item))
     return out
 
 
@@ -263,20 +287,16 @@ def _apply_account(raw: dict[str, Any], defaults: dict[str, Any], index: int) ->
 
 
 def _parse_lanes(value: Any) -> Any:
-    """`8` / `"8"` / `"auto"` / `"all"` / 0 都允许。"""
+    """`8` / `"8"` / `"auto"` / `"all"` / 0 都允许；小数或乱写一律报错。"""
     if value is None:
         return None
     if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        return int(value)
-    text = str(value).strip().lower()
-    if text in {"auto", "all", "max"}:
-        return text
-    try:
-        return int(text)
-    except ValueError:
-        return text
+        raise ConfigError(f"realtime_lanes 必须是整数、auto 或 all，收到布尔值 {value!r}")
+    if isinstance(value, (int, float, str)):
+        text = str(value).strip().lower()
+        if text in {"auto", "all", "max"}:
+            return text
+    return _to_int("realtime_lanes", value)
 
 
 def _read_yaml(path: Path, required: bool) -> dict[str, Any]:
@@ -299,8 +319,13 @@ def load_config(
     accounts_path: Path | None = None,
 ) -> AppConfig:
     root = root.resolve()
+    explicit_config = config_path is not None
     cfg_path = (config_path or (root / "config.yaml")).resolve()
     acc_path = (accounts_path or (root / "accounts.yaml")).resolve()
+
+    # 显式指定的配置文件必须存在：否则参数会悄悄回落到默认值（--config typo.yaml 就是坑）
+    if explicit_config and not cfg_path.exists():
+        raise ConfigError(f"指定的配置文件不存在：{cfg_path}")
 
     rt = _apply_runtime(_read_yaml(cfg_path, required=False))
     acc_raw = _read_yaml(acc_path, required=True)
@@ -327,20 +352,40 @@ def load_config(
 def validate(app: AppConfig) -> None:
     rt = app.runtime
     if rt.engine not in ENGINES:
-        raise ConfigError(f"engine 只能是 {ENGINES}，当前 {rt.engine}")
+        raise ConfigError(f"engine 只能是 {ENGINES}，当前 {rt.engine!r}")
     if rt.speed not in SPEEDS:
-        raise ConfigError(f"speed 只能是 {SPEEDS}，当前 {rt.speed}")
+        raise ConfigError(f"speed 只能是 {SPEEDS}，当前 {rt.speed!r}")
     if not 1 <= int(rt.target_percent) <= 100:
         raise ConfigError("target_percent 必须在 1~100")
     if rt.chunk_seconds < 0:
         raise ConfigError("chunk_seconds 不能为负")
-    if rt.gap_min > rt.gap_max:
-        raise ConfigError("gap_seconds 下限不能大于上限")
+    if rt.gap_min < 0 or rt.gap_min > rt.gap_max:
+        raise ConfigError("gap_seconds 必须满足 0 <= 下限 <= 上限")
     if int(rt.realtime_max_lanes) < 1:
         raise ConfigError("realtime_max_lanes 至少为 1")
     _check_lanes(rt.realtime_lanes, "realtime_lanes")
-    if not rt.base_url.startswith("http"):
+    if not isinstance(rt.base_url, str) or not rt.base_url.startswith("http"):
         raise ConfigError("base_url 必须是 http(s) 地址")
+    for label, value, low in (
+        ("timeout", rt.timeout, 0.1),
+        ("rps", rt.rps, 0.1),
+        ("global_rps", rt.global_rps, 0.1),
+    ):
+        if float(value) < low:
+            raise ConfigError(f"{label} 必须大于等于 {low}，当前 {value!r}")
+    for label, value in (
+        ("account_jobs", rt.account_jobs),
+        ("per_account_jobs", rt.per_account_jobs),
+        ("max_browser_contexts", rt.max_browser_contexts),
+        ("retries", rt.retries),
+        ("tick_threads", rt.tick_threads),
+    ):
+        if int(value) < 1:
+            raise ConfigError(f"{label} 至少为 1，当前 {value!r}")
+    if int(rt.tick_interval) < 0:
+        raise ConfigError("tick_interval 不能为负")
+    if int(rt.login_timeout) < 5:
+        raise ConfigError("login_timeout 至少为 5 秒")
 
     seen: set[str] = set()
     for acc in app.accounts:

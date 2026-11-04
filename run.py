@@ -101,7 +101,8 @@ def build_parser() -> argparse.ArgumentParser:
     run = sub.add_parser("run", help="开始刷课")
     add_common(run)
     run.add_argument("--course", type=int, action="append", default=[], help="指定课程 id，可重复")
-    run.add_argument("--only", default="", help="只处理这些活动 id，逗号分隔")
+    run.add_argument("--only", default=None,
+                     help="只处理这些活动 id（逗号分隔）；不写就是全部可执行活动")
     run.add_argument("--speed", choices=["probe", "normal", "human", "realtime", "tick"], default=None)
     run.add_argument("--chunk-seconds", type=int, default=None, help="normal/realtime/tick 档的段长秒数")
     run.add_argument("--interval", type=float, default=None,
@@ -326,13 +327,17 @@ def cmd_schedule(app: AppConfig, args) -> int:
     return EXIT_ERROR
 
 
-def parse_only(value: str) -> set[int] | None:
-    """解析 --only：空 = 不限；写错必须报错，不能静默退化成「处理全部活动」。"""
-    raw = (value or "").strip()
-    if not raw:
+def parse_only(value: str | None) -> set[int] | None:
+    """解析 --only。
+
+    只有「完全没给这个参数」（None）才表示不限活动；
+    显式给了却解析不出任何 ID（`--only ""`、`--only ","`、`--only "，"`）一律报错，
+    否则会静默退化成「处理所选课程的全部可执行活动」。
+    """
+    if value is None:
         return None
     picked: set[int] = set()
-    for part in raw.replace("，", ",").replace(" ", ",").split(","):
+    for part in str(value).replace("，", ",").replace(" ", ",").split(","):
         part = part.strip()
         if not part:
             continue
@@ -342,7 +347,11 @@ def parse_only(value: str) -> set[int] | None:
                 "不想限制就整个省略这个参数"
             )
         picked.add(int(part))
-    return picked or None
+    if not picked:
+        raise ConfigError(
+            f"--only 给了空值（{value!r}）：要么写活动 ID，要么整个省略这个参数"
+        )
+    return picked
 
 
 def cmd_run(app: AppConfig, args) -> int:

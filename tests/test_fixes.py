@@ -305,18 +305,26 @@ class ProxyTest(unittest.TestCase):
 
 
 class OnlyParsingTest(unittest.TestCase):
-    def test_empty_means_no_filter(self):
-        self.assertIsNone(cli.parse_only(""))
-        self.assertIsNone(cli.parse_only("   "))
+    def test_omitted_means_no_filter(self):
+        self.assertIsNone(cli.parse_only(None))          # 参数没给
 
-    def test_valid_list(self):
+    def test_valid_forms(self):
+        self.assertEqual(cli.parse_only("92918"), {92918})
         self.assertEqual(cli.parse_only("92918,92919"), {92918, 92919})
         self.assertEqual(cli.parse_only("92918 92919"), {92918, 92919})
         self.assertEqual(cli.parse_only("92918，92919"), {92918, 92919})
+        self.assertEqual(cli.parse_only(" 92918 , 92919 "), {92918, 92919})
+        self.assertEqual(cli.parse_only("92918,92918"), {92918})
 
-    def test_invalid_raises_instead_of_ignoring(self):
-        for bad in ("abc", "92918,abc", "-1", "1.5", "all"):
-            with self.assertRaises(ConfigError):
+    def test_empty_and_separator_only_are_rejected(self):
+        """显式给了却解析不出 ID —— 必须报错，不能退化成「不限活动」。"""
+        for bad in ("", "   ", ",", "，", ",,", ", ，,"):
+            with self.assertRaises(ConfigError, msg=repr(bad)):
+                cli.parse_only(bad)
+
+    def test_invalid_tokens_are_rejected(self):
+        for bad in ("abc", "92918,abc", "-1", "1.5", "all", "92918;92919"):
+            with self.assertRaises(ConfigError, msg=repr(bad)):
                 cli.parse_only(bad)
 
 
@@ -349,15 +357,75 @@ class ConfigTypeTest(unittest.TestCase):
                 self.build(text)
             self.assertIn(field, str(ctx.exception))
 
+    def test_non_finite_numbers_are_rejected(self):
+        """YAML 的 .inf / .nan 是合法字面量，不能让它漏进运行时。"""
+        for text, field in (
+            ("chunk_seconds: .inf\n", "chunk_seconds"),
+            ("chunk_seconds: .nan\n", "chunk_seconds"),
+            ("timeout: .nan\n", "timeout"),
+            ("rps: .inf\n", "rps"),
+            ("gap_seconds: [0, .inf]\n", "gap_seconds"),
+        ):
+            with self.assertRaises(ConfigError) as ctx:
+                self.build(text)
+            self.assertIn(field, str(ctx.exception))
+
+    def test_float_never_silently_truncated(self):
+        for text, field in (
+            ("target_percent: 80.9\n", "target_percent"),
+            ("chunk_seconds: 120.5\n", "chunk_seconds"),
+            ('target_percent: "80.9"\n', "target_percent"),
+        ):
+            with self.assertRaises(ConfigError) as ctx:
+                self.build(text)
+            self.assertIn(field, str(ctx.exception))
+        # 整数形态的浮点（80.0）是允许的
+        self.assertEqual(self.build("target_percent: 80.0\n").runtime.target_percent, 80)
+
+    def test_non_string_fields_rejected(self):
+        for text, field in (
+            ("base_url: 123\n", "base_url"),
+            ("user_agent: 42\n", "user_agent"),
+            ("profile_dir: [a, b]\n", "profile_dir"),
+        ):
+            with self.assertRaises(ConfigError) as ctx:
+                self.build(text)
+            self.assertIn(field, str(ctx.exception))
+
+    def test_out_of_range_values_rejected(self):
+        for text, field in (
+            ("rps: 0\n", "rps"),
+            ("timeout: -1\n", "timeout"),
+            ("account_jobs: 0\n", "account_jobs"),
+            ("gap_seconds: [-1, 2]\n", "gap_seconds"),
+            ("base_url: ftp://x\n", "base_url"),
+        ):
+            with self.assertRaises(ConfigError) as ctx:
+                self.build(text)
+            self.assertIn(field, str(ctx.exception))
+
     def test_bad_account_course_ids(self):
-        with self.assertRaises(ConfigError) as ctx:
-            self.build("", "accounts:\n  - name: acc01\n    enabled: true\n    course_ids: [abc]\n")
-        self.assertIn("course_ids", str(ctx.exception))
+        for bad in ("[abc]", "[29066.9]", '[29066, "x"]'):
+            with self.assertRaises(ConfigError) as ctx:
+                self.build("", f"accounts:\n  - name: acc01\n    enabled: true\n    course_ids: {bad}\n")
+            self.assertIn("course_ids", str(ctx.exception))
 
     def test_bad_account_enabled(self):
         with self.assertRaises(ConfigError) as ctx:
             self.build("", "accounts:\n  - name: acc01\n    enabled: maybe\n")
         self.assertIn("enabled", str(ctx.exception))
+
+    def test_explicit_config_path_must_exist(self):
+        root = Path(tempfile.mkdtemp())
+        (root / "accounts.yaml").write_text(
+            "accounts:\n  - name: acc01\n    enabled: true\n", encoding="utf-8"
+        )
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        with self.assertRaises(ConfigError) as ctx:
+            load_config(root, root / "mis-typed.yaml", root / "accounts.yaml")
+        self.assertIn("mis-typed.yaml", str(ctx.exception))
+        # 默认配置文件不存在时仍可以用内置默认值
+        self.assertEqual(load_config(root).runtime.rps, 3.0)
 
 
 class CliValidationTest(unittest.TestCase):
@@ -388,9 +456,19 @@ class CliValidationTest(unittest.TestCase):
         self.assertEqual(self.call(["--target", "101"]), cli.EXIT_ERROR)
 
     def test_bad_only_rejected_not_widened(self):
-        """--only 写错必须报错退出，绝不能退化成「不限活动」。"""
-        self.assertEqual(self.call([], only="abc"), cli.EXIT_ERROR)
-        self.assertEqual(self.call([], only="92918,abc"), cli.EXIT_ERROR)
+        """--only 写错或只给分隔符，必须报错退出，绝不能退化成「不限活动」。"""
+        for bad in ("abc", "92918,abc", "", ",", "，"):
+            with self.subTest(only=bad):
+                self.assertEqual(self.call([], only=bad), cli.EXIT_ERROR)
+
+    def test_omitted_only_is_allowed(self):
+        """完全不写 --only 不会被当成参数错误（打桩 run_all，绝不真的联网/刷课）。"""
+        with mock.patch.object(cli.scheduler, "run_all", return_value=[]) as run_all, \
+                mock.patch.object(cli.report, "print_outcomes"), \
+                mock.patch.object(cli.report, "write_result"):
+            code = self.call([], only=None)
+        self.assertEqual(code, cli.EXIT_OK)
+        self.assertEqual(run_all.call_args.kwargs.get("only"), None)
 
     def test_negative_lanes_rejected(self):
         self.assertEqual(self.call(["--speed", "realtime", "--lanes", "-1"]), cli.EXIT_ERROR)
