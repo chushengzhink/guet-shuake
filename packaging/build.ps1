@@ -20,7 +20,8 @@ param(
     [ValidateSet('selfsigned', 'pfx')]
     [string]$SignMode = 'selfsigned',
     [string]$PfxPath,
-    [string]$PfxPassword
+    [string]$PfxPassword,
+    [switch]$AllowMissingBrowser
 )
 
 $ErrorActionPreference = 'Stop'
@@ -65,7 +66,11 @@ try {
         $env:GUET_BUNDLE_BROWSER = if ($v -eq 'full') { '1' } else { '0' }
 
         if ($v -eq 'full' -and -not (Test-Path (Join-Path $packaging 'browsers\chromium-*'))) {
-            Write-Warning "packaging\browsers 里没有 Chromium，full 版将不含内核（等同 lite）"
+            if ($AllowMissingBrowser) {
+                Write-Warning "packaging\browsers 里没有 Chromium，full 版将不含内核（开发构建）"
+            } else {
+                throw "full 版缺少内置浏览器：先把 Chromium 放进 packaging\browsers，或用 -AllowMissingBrowser 跳过"
+            }
         }
 
         python -m PyInstaller --noconfirm --clean `
@@ -84,7 +89,7 @@ try {
             if ($PfxPath) { $signArgs['PfxPath'] = $PfxPath }
             if ($PfxPassword) { $signArgs['PfxPassword'] = $PfxPassword }
             & powershell -ExecutionPolicy Bypass -File (Join-Path $packaging 'sign.ps1') @signArgs
-            if ($LASTEXITCODE -ne 0) { Write-Warning 'exe 签名失败（继续打包）' }
+            if ($LASTEXITCODE -ne 0) { throw 'exe 签名失败，已中止（发布物不能是无签名状态）' }
         }
 
         if ($iscc) {
@@ -99,7 +104,7 @@ try {
                 if ($PfxPath) { $setupArgs['PfxPath'] = $PfxPath }
                 if ($PfxPassword) { $setupArgs['PfxPassword'] = $PfxPassword }
                 & powershell -ExecutionPolicy Bypass -File (Join-Path $packaging 'sign.ps1') @setupArgs
-                if ($LASTEXITCODE -ne 0) { Write-Warning '安装包签名失败' }
+                if ($LASTEXITCODE -ne 0) { throw '安装包签名失败，已中止' }
             }
         } else {
             Write-Warning "没找到 ISCC.exe，跳过安装包；可用 dist\$v\GuetShuake 目录直接分发"

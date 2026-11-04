@@ -281,7 +281,10 @@ def cmd_schedule(app: AppConfig, args) -> int:
     if args.delete:
         cmd = ["schtasks", "/delete", "/tn", name, "/f"]
         print(subprocess.list2cmdline(cmd))
-        subprocess.run(cmd, check=False)
+        result = subprocess.run(cmd, check=False)
+        if result.returncode != 0:
+            report.info(f"删除失败（返回码 {result.returncode}）：任务可能不存在，或需要管理员权限")
+            return EXIT_ERROR
         return EXIT_OK
 
     base = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "guet-shuake"
@@ -410,6 +413,9 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_ERROR
     except BrowserUnavailable as exc:
         log.error("浏览器不可用：%s", exc)
+        return EXIT_ERROR
+    except RuntimeError as exc:      # 探针等模块抛的运行时错误
+        log.error("%s", exc)
         return EXIT_ERROR
     except KeyboardInterrupt:
         log.warning("已中断（state.json 里保留了进度，重跑会接着做）")

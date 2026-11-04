@@ -97,6 +97,8 @@ class AppState:
         self.planned: dict[str, int] = {}
         self.run_id = 0
         self.last_outcomes: list[dict[str, Any]] = []
+        self.shutdown = threading.Event()
+        self.run_thread: threading.Thread | None = None
         self.app: AppConfig | None = None
         self.server: ThreadingHTTPServer | None = None
 
@@ -439,7 +441,9 @@ def api_start(state: AppState, body: dict) -> dict:
         finally:
             state.finish(run_id)
 
-    threading.Thread(target=worker, name="gui-run", daemon=True).start()
+    thread = threading.Thread(target=worker, name="gui-run", daemon=True)
+    state.run_thread = thread
+    thread.start()
     return {"ok": True}
 
 
@@ -492,6 +496,7 @@ def api_logs(state: AppState, after: int) -> dict:
 
 def api_quit(state: AppState) -> dict:
     cancel.request()
+    state.shutdown.set()          # 通知启动器退出（F12）
     server = state.server
 
     def shutdown() -> None:
@@ -564,7 +569,11 @@ class Handler(BaseHTTPRequestHandler):
             self._json(api_status(self.state))
             return
         if parsed.path == "/api/logs":
-            after = int((query.get("after") or ["0"])[0] or 0)
+            try:
+                after = int((query.get("after") or ["0"])[0] or 0)
+            except (TypeError, ValueError):
+                self._fail("after 必须是整数", 400)
+                return
             self._json(api_logs(self.state, after))
             return
         self._fail("not found", 404)

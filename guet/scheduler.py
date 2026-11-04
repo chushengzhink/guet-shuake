@@ -41,10 +41,21 @@ class CourseCache:
         with self._locks_guard:
             return self._course_locks.setdefault(key, threading.Lock())
 
+    CACHE_VERSION = 2
+
+    @staticmethod
+    def cache_key(client: TronClassClient, cid: int) -> str:
+        """活动接口受站点和子课程影响，缓存键必须带上它们（F13）。"""
+        rt = getattr(client, "rt", None)
+        base = str(getattr(rt, "base_url", "") or "").rstrip("/")
+        sub = getattr(rt, "sub_course_id", 0)
+        return f"v{CourseCache.CACHE_VERSION}|{base}|{cid}|{sub}"
+
     def bundle(self, cid: int, client: TronClassClient) -> dict:
-        # 按课程加锁：不同课程可以并行加载，同一课程只拉一次
-        with self._lock_for(str(cid)):
-            entry = self._data.get(str(cid)) or {}
+        key = self.cache_key(client, cid)
+        # 按缓存键加锁：不同课程/站点可以并行加载，同一个只拉一次
+        with self._lock_for(key):
+            entry = self._data.get(key) or {}
             if entry.get("activities") and time.time() - float(entry.get("ts") or 0) < self.ttl:
                 return entry
             meta: dict = {}
@@ -59,7 +70,7 @@ class CourseCache:
                 "activities": client.activities(cid),
                 "modules": client.modules(cid),
             }
-            self._data[str(cid)] = data
+            self._data[key] = data
             with self._save_lock:
                 try:
                     atomic_write_json(self.path, self._data)
@@ -68,8 +79,11 @@ class CourseCache:
             return data
 
     def invalidate(self, cid: int | None = None) -> None:
-        keys = [str(cid)] if cid is not None else list(self._data)
         with self._locks_guard:
+            if cid is None:
+                keys = list(self._data)
+            else:
+                keys = [k for k in self._data if k.split("|")[2:3] == [str(cid)]]
             locks = [self._course_locks.setdefault(key, threading.Lock()) for key in keys]
         for lock in locks:
             lock.acquire()
@@ -77,7 +91,8 @@ class CourseCache:
             if cid is None:
                 self._data.clear()
             else:
-                self._data.pop(str(cid), None)
+                for key in keys:
+                    self._data.pop(key, None)
             with self._save_lock:
                 try:
                     atomic_write_json(self.path, self._data)
@@ -86,6 +101,7 @@ class CourseCache:
         finally:
             for lock in reversed(locks):
                 lock.release()
+
 
 
 @dataclass

@@ -125,17 +125,23 @@ def main(argv: list[str] | None = None) -> int:
     window = open_window(url, data_dir)
     try:
         if window is not None:
-            window.wait()
-        else:  # 没有 Edge：等用户自己关（Ctrl-C 或页面里的退出按钮）
-            while True:
-                time.sleep(0.5)
+            # 关窗、页面里点退出、Ctrl-C，三种都走 shutdown 事件
+            while not state.shutdown.is_set() and window.poll() is None:
+                state.shutdown.wait(0.3)
+        else:  # 没有 Edge：等 /api/quit 或 Ctrl-C
+            while not state.shutdown.is_set():
+                state.shutdown.wait(0.5)
     except KeyboardInterrupt:
         pass
     finally:
         from .. import cancel
 
         cancel.request()
-        time.sleep(0.3)
+        state.shutdown.set()
+        worker = state.run_thread
+        if worker is not None and worker.is_alive():
+            log.info("等待后台任务收尾……")
+            worker.join(timeout=8)          # 有界等待，不无限挂
         server.shutdown()
         log.info("已退出")
     return 0

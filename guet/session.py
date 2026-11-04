@@ -37,13 +37,22 @@ class LoginRequired(SessionError):
     """profile 里没有可用登录态，需要先跑 `run.py login`。"""
 
 
-def _context_cookies(context, base_url: str) -> dict[str, str]:
+def _context_cookies(context, base_url: str) -> list[dict]:
+    """保留 domain/path/secure（F20）：只压成 name→value 会把 cookie 发到无关域名。"""
     host = base_url.split("://", 1)[-1].split("/")[0]
-    cookies: dict[str, str] = {}
+    cookies: list[dict] = []
     for item in context.cookies():
         domain = (item.get("domain") or "").lstrip(".")
-        if host.endswith(domain) or domain.endswith(host):
-            cookies[item["name"]] = item["value"]
+        # 严格的域边界：evil-guet.edu.cn 不能算 guet.edu.cn 的子域
+        if not (host == domain or host.endswith("." + domain)):
+            continue
+        cookies.append({
+            "name": item["name"],
+            "value": item["value"],
+            "domain": item.get("domain") or host,
+            "path": item.get("path") or "/",
+            "secure": bool(item.get("secure")),
+        })
     return cookies
 
 
@@ -150,9 +159,10 @@ def login(app: AppConfig, account: AccountConfig, headless: bool = False) -> dic
             except Exception:  # pragma: no cover - 不影响主流程
                 logger.debug("登录后访问 /user/courses 失败，继续用当前 cookie", exc_info=True)
             cookies = _context_cookies(ctx, rt.base_url)
-            if not cookies.get("session"):
+            if not any(c["name"] == "session" for c in cookies):
                 raise SessionError("登录后没有拿到 session cookie，登录未真正生效")
-            logger.info("登录成功，已拿到 %d 个 cookie（%s）", len(cookies), ", ".join(sorted(cookies)))
+            logger.info("登录成功，已拿到 %d 个 cookie（%s）", len(cookies),
+                        ", ".join(sorted(c["name"] for c in cookies)))
             return cookies
         finally:
             if ctx is not None:
@@ -167,7 +177,7 @@ def login(app: AppConfig, account: AccountConfig, headless: bool = False) -> dic
                 pass
 
 
-def cookies_from_profile(app: AppConfig, account: AccountConfig) -> dict[str, str]:
+def cookies_from_profile(app: AppConfig, account: AccountConfig) -> list[dict]:
     """headless 起一次浏览器，验证会话并读出最新 cookie。"""
     rt = app.runtime
     logger = app.logger(f"session.{account.name}", account)
@@ -187,7 +197,7 @@ def cookies_from_profile(app: AppConfig, account: AccountConfig) -> dict[str, st
                     f"{account.name} 的登录态已失效，重新执行：python run.py login --account {account.name}"
                 )
             cookies = _context_cookies(ctx, rt.base_url)
-            logger.debug("从 profile 取到 cookie：%s", ", ".join(sorted(cookies)))
+            logger.debug("从 profile 取到 cookie：%s", ", ".join(sorted(c["name"] for c in cookies)))
             return cookies
         finally:
             if ctx is not None:

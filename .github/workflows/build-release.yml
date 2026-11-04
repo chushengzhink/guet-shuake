@@ -99,7 +99,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.ver.outputs.value }}
-          files: packaging/output/*.exe
+          files: |
+            packaging/output/*.exe
+            packaging/output/SHA256SUMS.txt
           generate_release_notes: true
           body: |
             ## 下载哪个版本

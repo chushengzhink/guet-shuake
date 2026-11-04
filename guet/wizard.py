@@ -6,12 +6,13 @@
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from . import report, scheduler, session
-from .browser import BrowserUnavailable, configure_slots, resolve_chromium, start_playwright
+from .browser import BrowserUnavailable, configure_slots, find_edge_exe, resolve_chromium, start_playwright
 from .client import SessionExpired, TronClassClient, TronClassError
 from .config import AppConfig, ConfigError, RuntimeConfig, load_config
 from .planner import (
@@ -147,6 +148,10 @@ def describe_plan(plan: CoursePlan, rt: RuntimeConfig, account) -> dict[str, Any
 
 # ------------------------------------------------------------------ 环境与配置
 def browser_ready() -> tuple[bool, str]:
+    """预检要和真正启动一致：系统 Edge → 内置 Chromium 都算可用（F19）。"""
+    edge = find_edge_exe()
+    if edge:
+        return True, f"系统 Edge：{edge}"
     try:
         pw = start_playwright()
         try:
@@ -156,9 +161,15 @@ def browser_ready() -> tuple[bool, str]:
     except Exception as exc:  # pragma: no cover - 环境相关
         return False, str(exc)
     path = executable or detail
-    if not path or not Path(path).exists():
-        return False, f"没有找到 Chromium（{path}）"
-    return True, path
+    if path and Path(path).exists():
+        return True, f"内置 Chromium：{path}"
+    for candidate in (
+        Path(os.environ.get("ProgramFiles", "") ) / "Google/Chrome/Application/chrome.exe",
+        Path(os.environ.get("ProgramFiles(x86)", "")) / "Google/Chrome/Application/chrome.exe",
+    ):
+        if candidate.exists():
+            return True, f"系统 Chrome：{candidate}"
+    return False, "没有 Edge / Chrome / 内置 Chromium"
 
 
 def ensure_accounts_file(root: Path, ask: AskFn) -> Path:

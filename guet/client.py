@@ -164,23 +164,37 @@ class TronClassClient:
             academic_year_id or str(active.get("academic_year_id")),
         )
 
-    def my_courses(self, semester_id: str = "", academic_year_id: str = "", page_size: int = 50) -> list[dict]:
+    def my_courses(self, semester_id: str = "", academic_year_id: str = "",
+                   page_size: int = 50, max_pages: int = 20) -> list[dict]:
+        """取全部课程（F21：之前固定只取第一页，课程多了会静默漏掉）。"""
         sem, ay = self.resolve_term(semester_id, academic_year_id)
-        body = {
-            "fields": MY_COURSES_FIELDS,
-            "page": 1,
-            "page_size": page_size,
-            "conditions": {
-                "semester_id": [str(sem)],
-                "academic_year_id": [str(ay)],
-                "keyword": "",
-                "classify_type": "recently_started",
-                "display_studio_list": False,
-            },
-            "showScorePassedStatus": False,
-        }
-        data = self._json("POST", "/api/my-courses", json_body=body)
-        return (data or {}).get("courses") or []
+        courses: list[dict] = []
+        seen: set = set()
+        for page in range(1, max_pages + 1):
+            body = {
+                "fields": MY_COURSES_FIELDS,
+                "page": page,
+                "page_size": page_size,
+                "conditions": {
+                    "semester_id": [str(sem)],
+                    "academic_year_id": [str(ay)],
+                    "keyword": "",
+                    "classify_type": "recently_started",
+                    "display_studio_list": False,
+                },
+                "showScorePassedStatus": False,
+            }
+            data = self._json("POST", "/api/my-courses", json_body=body) or {}
+            batch = data.get("courses") or []
+            for course in batch:
+                key = str(course.get("id"))
+                if key in seen:      # 服务端异常重复页时防止死循环
+                    continue
+                seen.add(key)
+                courses.append(course)
+            if len(batch) < page_size:
+                break
+        return courses
 
     def course_meta(self, cid: int) -> dict:
         fields = (

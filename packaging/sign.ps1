@@ -125,8 +125,13 @@ foreach ($file in $files) {
     try {
         $sig = Set-AuthenticodeSignature -FilePath $file -Certificate $certificate `
             -HashAlgorithm SHA256 -TimestampServer $TimestampServer -ErrorAction Stop
-        if ($sig.Status -eq 'Valid' -or $sig.Status -eq 'UnknownError') {
-            # 自签名且未导入根时，状态是 UnknownError/NotTrusted，但签名本身已写入
+        if ($Mode -eq 'pfx' -and $sig.Status -ne 'Valid') {
+            # 正式证书签完必须是 Valid，否则说明证书/时间戳有问题，不能发
+            Write-Warning ("  ✗ {0} 正式证书签名后状态为 {1}：{2}" -f $name, $sig.Status, $sig.StatusMessage)
+            $failed++
+        }
+        elseif ($sig.Status -eq 'Valid' -or $sig.Status -eq 'UnknownError') {
+            # 自签名且未导入信任根时是 UnknownError —— 签名已写入，但不是「受信任」
             Write-Host ("  ✓ {0}（{1} MB）签名写入，状态：{2}" -f $name, $size, $sig.Status) -ForegroundColor Green
         }
         else {

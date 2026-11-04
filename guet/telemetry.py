@@ -23,6 +23,7 @@ class Telemetry:
         self._cache: dict[int, tuple[float, dict]] = {}
         self.sent = 0
         self.failed = 0
+        self._retry_after = 0.0     # 失败后退避，而不是永久关闭整个账号的埋点
 
     def _settings(self, course_id: int) -> dict:
         now = time.time()
@@ -65,12 +66,11 @@ class Telemetry:
 
     def _send_video(self, action: str, course_id: int, module_id: int, activity_id: int,
                     upload_id: int | None, start: int, end: int) -> None:
-        if not self.enabled:
+        if not self.enabled or time.time() < self._retry_after:
             return
         settings = self._settings(course_id)
         if not settings.get("mgsJwt"):
-            self.enabled = False
-            self.logger.info("页面里没找到 mgsJwt，关闭埋点镜像")
+            self._retry_after = time.time() + 120     # 一会儿再试，别永久放弃
             return
         extra = None
         if action == "play":
@@ -100,11 +100,11 @@ class Telemetry:
         self._send_video("play", course_id, module_id, activity_id, upload_id, start, end)
 
     def material(self, course_id: int, module_id: int, activity_id: int, upload_id: int) -> None:
-        if not self.enabled:
+        if not self.enabled or time.time() < self._retry_after:
             return
         settings = self._settings(course_id)
         if not settings.get("mgsJwt"):
-            self.enabled = False
+            self._retry_after = time.time() + 120
             return
         payload = self._payload(course_id, module_id, activity_id, upload_id, "view", "material", settings)
         try:

@@ -51,6 +51,7 @@ class LaneJob:
         self.clock = clock
         self.total = int(task.duration)
         self.cursor = 0
+        self.gaps: list[tuple[int, int]] = []
         self.percent = 0
         self.sent = 0
         self.retries = 0
@@ -72,13 +73,21 @@ class LaneJob:
         if state == "full" or percent >= self.target:
             self.done = True
             return
-        merged = merge_ranges(ranges)
-        self.cursor = min(self.total, merged[-1][1] if merged else 0)
-        self.next_at = self.started + self.chunk
+        self._load_gaps_from(ranges, percent, state)
+        # 第一段按『实际缺口长度』等，而不是统一按 chunk（碎片缺口时更准）
+        first = self.gaps[0] if self.gaps else None
+        span = min(self.chunk, first[1] - first[0]) if first else self.chunk
+        self.next_at = self.started + max(1, span)
         self.runner.telemetry.video_view(
             self.task.course_id, self.task.module_id, self.task.activity_id,
             self.task.upload_ids[0] if self.task.upload_ids else None,
         )
+
+    def _load_gaps_from(self, ranges, percent: int, state: str = "") -> None:
+        """把「还没看过的区间」排成队列（F23：原来只记一个 cursor，会重报已覆盖的区间）。"""
+        self.percent = max(self.percent, 100 if state == "full" else percent)
+        self.gaps = complement(merge_ranges(ranges), self.total)
+        self.cursor = self.gaps[0][0] if self.gaps else self.total
 
     @property
     def segments(self) -> int:
@@ -92,10 +101,17 @@ class LaneJob:
             return "failed"
 
         now = self.clock()
-        start = self.cursor
-        end = min(self.total, start + self.chunk)
-        if end <= start:
+        while self.gaps and self.gaps[0][1] <= self.cursor:
+            self.gaps.pop(0)                       # 已补齐的缺口跳过
+        if not self.gaps:
             return self._advance(now)
+        gap_start, gap_end = self.gaps[0]
+        start = max(self.cursor, gap_start)
+        end = min(start + self.chunk, gap_end)
+        if end <= start:
+            self.gaps.pop(0)
+            self.cursor = self.gaps[0][0] if self.gaps else self.total
+            return "progress" 
 
         self.runner.request_count += 1
         try:
@@ -126,7 +142,7 @@ class LaneJob:
 
         self.sent += 1
         self.history.append((now, start, end))
-        self.next_at = now + self.chunk
+        self.next_at = now + max(1, end - start)
 
         state, percent, _ = parse_activity_read(resp)
         if percent > self.percent:
@@ -139,6 +155,9 @@ class LaneJob:
             return "done"
 
         self.cursor = end
+        if end >= gap_end:                         # 这个缺口补齐了，换下一个
+            self.gaps.pop(0)
+            self.cursor = self.gaps[0][0] if self.gaps else self.total
         self.runner.telemetry.video(
             self.task.course_id, self.task.module_id, self.task.activity_id,
             self.task.upload_ids[0] if self.task.upload_ids else None, start, end,
@@ -147,8 +166,8 @@ class LaneJob:
 
     # ------------------------------------------------------------------ 内部
     def _advance(self, now: float) -> str:
-        """时间线走到头了吗？走完但服务端没给满就按缺口补一轮。"""
-        if self.cursor < self.total:
+        """缺口都处理完了吗？走完但服务端没给满就再查一次。"""
+        if self.gaps:
             return "progress"
         if self.percent >= self.target:
             self.done = True
@@ -163,18 +182,14 @@ class LaneJob:
             self.failed = True
             self.detail = self.detail or f"时间线走完，服务端只记到 {self.percent}%"
             return "failed"
-        self.next_at = now + self.chunk
+        self.next_at = now + max(1, end - start)
         return "progress"
 
     def _replan(self) -> bool:
         read = self.runner.client.activity_read(self.task.activity_id, self.task.course_id)
         state, percent, ranges = parse_activity_read(read)
-        self.percent = max(self.percent, 100 if state == "full" else percent)
-        gaps = complement(ranges, self.total)
-        if not gaps:
-            return False
-        self.cursor = gaps[0][0]
-        return True
+        self._load_gaps_from(ranges, percent, state)
+        return bool(self.gaps)
 
     def result(self, status: str):
         from .runner import TaskResult  # 延迟导入，避免 runner <-> realtime 循环

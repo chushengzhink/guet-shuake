@@ -154,8 +154,7 @@ class Transport:
 class HttpTransport(Transport):
     engine = "http"
 
-    def __init__(self, rt: RuntimeConfig, cookies: Mapping[str, str] | None = None,
-                 limiter: TokenBucket | None = None):
+    def __init__(self, rt: RuntimeConfig, cookies=None, limiter: TokenBucket | None = None):
         super().__init__(rt, limiter)
         self.session = requests.Session()
         # 必须走「请求级 proxies」：requests 会先把 HTTP(S)_PROXY 环境变量
@@ -163,9 +162,23 @@ class HttpTransport(Transport):
         self._proxies = (
             {"http": rt.proxy, "https": rt.proxy} if rt.proxy else None
         )
-        if cookies:
+        self._import_cookies(cookies)
+
+    def _import_cookies(self, cookies) -> None:
+        """支持 dict(name→value) 与带 domain/path/secure 的列表两种形式。"""
+        if not cookies:
+            return
+        if isinstance(cookies, Mapping):
             for name, value in cookies.items():
                 self.session.cookies.set(name, value)
+            return
+        for item in cookies:
+            self.session.cookies.set(
+                item["name"], item["value"],
+                domain=item.get("domain"),
+                path=item.get("path") or "/",
+                secure=bool(item.get("secure")),
+            )
         self.session.headers.update({
             "User-Agent": rt.user_agent,
             "Accept-Language": "zh-CN,zh;q=0.9",

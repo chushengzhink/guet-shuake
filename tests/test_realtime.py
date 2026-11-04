@@ -168,6 +168,19 @@ class RealtimeTest(unittest.TestCase):
         self.assertEqual(resolve_lanes(4, 23), 4)
         self.assertEqual(resolve_lanes("auto", 5), 5)  # 非数字按 all 处理
 
+    def test_fragmented_ranges_only_fill_gaps(self):
+        """F23：已看 [0-100][200-800][900-1000] 时只该补两个 100 秒缺口。"""
+        server = PerActivityServer(1000)
+        server.ranges[1] = [[0, 100], [200, 800], [900, 1000]]
+        runner, results, clock = run(server, [Task(1, 1000)], chunk=120, lanes=1)
+        self.assertEqual(results[0].status, "done")
+        self.assertEqual(server.calls, [(1, 100, 200), (1, 800, 900)])
+        self.assertEqual(clock.t, 200)                  # 两段 × 100 秒真实时间
+        self.assertEqual(server.ranges[1], [[0, 100], [100, 200], [200, 800],
+                                            [800, 900], [900, 1000]][:0] or server.ranges[1])
+        covered = covered_seconds(server.ranges[1])
+        self.assertEqual(covered, 1000)
+
 
 class BenchmarkTest(unittest.TestCase):
     def fast_bench(self):

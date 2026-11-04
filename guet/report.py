@@ -140,10 +140,11 @@ def print_outcomes(outcomes: Iterable[Any]) -> None:
 
 
 def write_result(path: Path, outcomes: Iterable[Any]) -> None:
+    from .util import atomic_write_json
+
     payload = {
         "generated_at": __import__("time").strftime("%Y-%m-%dT%H:%M:%S"),
         "accounts": [o.to_dict() for o in outcomes],
     }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_json(path, payload)      # 多进程共享 result.json 时不会写坏
     info(f"结果已写入 {path}")
