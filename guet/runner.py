@@ -546,7 +546,14 @@ class AccountRunner:
             tasks.append(task)
 
         if not tasks:
-            self.log.info("课程 %s 没有需要处理的活动", plan.name)
+            manual = counts.get("manual", 0)
+            if manual:
+                self.log.info(
+                    "课程 %s 没有可自动处理的活动：视频/资料都已完成，剩 %d 个作业/考试需人工",
+                    plan.name, manual,
+                )
+            else:
+                self.log.info("课程 %s 没有需要处理的活动（视频和资料都已完成）", plan.name)
             return []
         if dry_run:
             self.log.info("dry-run：将处理 %d 个活动（视频 %d / 资料 %d）", len(tasks),

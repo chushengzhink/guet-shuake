@@ -199,13 +199,41 @@ def _unlock_handle(fh) -> None:
 
 
 @contextmanager
-def run_lock(path: Path) -> Iterator[None]:
+def run_lock(path: Path, wait: float = 0.0) -> Iterator[None]:
     """进程级独占锁：同一账号 / 同一 profile 只允许一个进程在跑。
 
     用操作系统的文件锁（msvcrt / flock），**不用文件年龄判断**：
     进程崩溃时系统自动释放，进程活多久锁就有效多久，不存在「跑满 6 小时锁失效」的问题。
     锁文件本身保留不删（内容只是 pid，方便排查），靠锁而不是靠存在性。
+
+    `wait > 0` 时会在超时内轮询重试——GUI 里「刷新课程」和「开始」可能同时要开浏览器，
+    这时应该排队而不是直接把任务判失败。
     """
+    deadline = time.monotonic() + max(0.0, float(wait))
+    while True:
+        try:
+            handle = _acquire_lock_file(path)
+            break
+        except LockBusy:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.2)
+
+    try:
+        try:
+            handle.truncate(1)                 # 保留首字节的占位，pid 写在后面
+            handle.seek(1)
+            handle.write(str(os.getpid()).encode())
+            handle.flush()
+        except OSError:  # pragma: no cover
+            pass
+        yield
+    finally:
+        _unlock_handle(handle)
+        handle.close()          # 只关一次
+
+
+def _acquire_lock_file(path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists() or path.stat().st_size == 0:
         try:
@@ -225,19 +253,7 @@ def run_lock(path: Path) -> Iterator[None]:
     except BaseException:
         fh.close()
         raise
-
-    try:
-        try:
-            fh.truncate(1)                     # 保留首字节的占位，pid 写在后面
-            fh.seek(1)
-            fh.write(str(os.getpid()).encode())
-            fh.flush()
-        except OSError:  # pragma: no cover
-            pass
-        yield
-    finally:
-        _unlock_handle(fh)
-        fh.close()          # 只关一次
+    return fh
 
 
 def human_seconds(seconds: float) -> str:

@@ -274,9 +274,16 @@ function renderRunState(){
   const map = {idle:'空闲', running:'运行中', stopping:'停止中', 'logging-in':'登录中'};
   const el = $('runState');
   el.textContent = map[state.status] || state.status;
-  const hint = state.status === 'running'
-    ? (state.speed === 'tick' ? '运行中 · 每 120 秒一轮，日志会陆续出现' : '运行中 · 正在逐个活动处理')
-    : '';
+  let hint = '';
+  if (state.status === 'running') {
+    hint = state.speed === 'tick' ? '运行中 · 每 120 秒一轮，日志会陆续出现' : '运行中 · 正在逐个活动处理';
+  } else if (state.status === 'idle') {
+    const entries = Object.values(state.progress || {});
+    const touched = entries.reduce((sum, p) => sum + (p.done || 0) + (p.failed || 0) + (p.pending || 0), 0);
+    if (entries.length && touched === 0) {
+      hint = '这次没有可自动处理的活动：视频/资料已完成，剩余作业/考试需要自己完成';
+    }
+  }
   document.getElementById('runHint').textContent = hint;
   el.className = 'status-pill ' + (state.status === 'running' ? 'running' : state.status === 'stopping' ? 'stopping' : '');
   const busy = state.status === 'running' || state.status === 'stopping';

@@ -217,13 +217,17 @@ def launch_context(pw: Playwright, profile_dir: Path, rt: RuntimeConfig, headles
 
 
 @contextmanager
-def profile_lock(profile_dir: Path) -> Iterator[None]:
-    """同一 profile 只允许一个进程使用（Chromium 自己也会锁，这里给个更清楚的报错）。"""
+def profile_lock(profile_dir: Path, wait: float = 45.0) -> Iterator[None]:
+    """同一 profile 只允许一个浏览器实例。
+
+    GUI 里「刷新课程」「登录」「开始刷课」都会开浏览器，并发时会撞锁 ——
+    这里排队等待（最多 45 秒），而不是直接把任务判失败。
+    """
     profile_dir.mkdir(parents=True, exist_ok=True)
     try:
-        with run_lock(profile_dir / ".lock"):
+        with run_lock(profile_dir / ".lock", wait=wait):
             yield
     except LockBusy as exc:
         raise BrowserUnavailable(
-            f"profile 正在被使用：{exc}；确认没有别的实例在跑后，删掉该 .lock 再试"
+            f"这个账号的浏览器还被另一个操作占着（等了 {wait:.0f} 秒）：{exc}"
         ) from exc

@@ -99,6 +99,8 @@ class AppState:
         self.last_outcomes: list[dict[str, Any]] = []
         self.shutdown = threading.Event()
         self.run_thread: threading.Thread | None = None
+        self.clients: dict[str, dict] = {}          # 账号 -> 复用的 client（少起几次浏览器）
+        self.account_locks: dict[str, threading.Lock] = {}
         self.app: AppConfig | None = None
         self.server: ThreadingHTTPServer | None = None
 
@@ -193,6 +195,19 @@ class AppState:
             if self.run_id == run_id:      # 只结束自己那次运行，不覆盖新的
                 self.status = "idle"
 
+    def account_lock(self, name: str) -> threading.Lock:
+        """同一账号的浏览器操作串行化：刷新课程 / 登录 / 开始不要互相抢 profile。"""
+        with self.lock:
+            return self.account_locks.setdefault(name, threading.Lock())
+
+    def drop_client(self, name: str) -> None:
+        entry = self.clients.pop(name, None)
+        if entry:
+            try:
+                entry["transport"].close()
+            except Exception:  # pragma: no cover
+                pass
+
     def mark_stopping(self) -> str:
         with self.lock:
             if self.status == "running":
@@ -247,10 +262,22 @@ def api_login(state: AppState, body: dict) -> dict:
     # F05：只有空闲状态才能登录，且用 run_id 保证只结束自己这次
     run_id = state.begin("logging-in")
     try:
-        session.login(app, account, headless=False)
+        with state.account_lock(account.name):
+            state.drop_client(account.name)          # 登录会换会话，旧 client 作废
+            session.login(app, account, headless=False)
         return {"ok": True, "account": account.name}
     finally:
         state.finish(run_id)
+
+
+class _NoopClose:
+    """缓存命中时返回它，调用方的 finally 里 close() 不会真的关掉会话。"""
+
+    def close(self) -> None:
+        pass
+
+
+CLIENT_TTL = 300.0
 
 
 def _client_for(state: AppState, name: str):
@@ -258,9 +285,22 @@ def _client_for(state: AppState, name: str):
     if app is None:
         raise ConfigError(state.error or "配置未就绪")
     account = app.account(name)
-    limiter = TokenBucket(app.runtime.rps, burst=max(1.0, app.runtime.rps))
-    client, transport = scheduler.make_client(app, account, limiter, None)
-    return account, client, transport
+
+    with state.account_lock(name):
+        entry = state.clients.get(name)
+        if entry and time.time() - entry["ts"] < CLIENT_TTL:
+            client = entry["client"]
+            try:
+                if client.check_session():
+                    return account, client, _NoopClose()      # 复用，不再起浏览器
+            except Exception:
+                pass
+            state.drop_client(name)
+
+        limiter = TokenBucket(app.runtime.rps, burst=max(1.0, app.runtime.rps))
+        client, transport = scheduler.make_client(app, account, limiter, None)
+        state.clients[name] = {"ts": time.time(), "client": client, "transport": transport}
+        return account, client, transport
 
 
 def api_courses(state: AppState, body: dict) -> dict:
