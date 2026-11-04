@@ -31,7 +31,7 @@ from .planner import (
     CoursePlan,
     build_plan,
 )
-from .progress import coverage_percent, covered_seconds, merge_ranges, plan_chunks
+from .progress import coverage_percent, covered_seconds, merge_ranges, plan_chunks, split_segments
 from .realtime import run_lanes
 from .telemetry import Telemetry
 from .ticker import run_ticks
@@ -167,6 +167,7 @@ class VideoJob:
         self.ranges: list = []
         self.pieces: list[tuple[int, int]] = []
         self.rounds = 0
+        self.max_rounds = 2
         self.sent = 0
         self.stalled = 0
         self.done = False
@@ -191,9 +192,15 @@ class VideoJob:
 
     def _replan(self) -> None:
         self.pieces = plan_chunks(self.ranges, self.total, self.chunk)
-        if not self.pieces and self.percent < self.target:
-            # 极端情况：服务端算出的已看区间对不上，直接整段补一次
-            self.pieces = [(0, int(self.total))]
+        if self.pieces or self.percent >= self.target:
+            return
+        # 服务端说区间已满、百分比却不达标：按段长重放。
+        # 绝不能整段重发——那样必然撞上服务端单段上限，陷入「拒绝→清零→再拒」的死循环。
+        self.rounds += 1
+        if self.rounds > self.max_rounds:
+            return
+        chunk = self.chunk or SERVER_MAX_SPAN_DEFAULT
+        self.pieces = split_segments([(0, int(self.total))], chunk)
 
     def step(self) -> str:
         """返回 done / failed / progress / idle。"""
@@ -228,16 +235,26 @@ class VideoJob:
             message = str(exc)
             limit = _server_max_span(message)
             if limit:
-                # 服务端明确告知上限：一次学会，直接按上限重排，不再盲目试
+                # 只有「真的把段长改小」才算学到新信息；
+                # 同一个上限被反复拒绝时不能清零 stalled，否则永远停不下来。
+                new_chunk = max(15, min(int(self.chunk or limit), limit))
+                learned = self.chunk is None or new_chunk < self.chunk
+                self.chunk = new_chunk
                 self.runner.max_span = min(self.runner.max_span, limit)
-                self.chunk = min(int(self.chunk or limit), limit)
-                self.stalled = 0
                 self.detail = f"服务端限制单段 ≤{limit}s，已改用 {self.chunk}s 段"
-                self.runner.log.info(
-                    "  %s 服务端限制单段 ≤%ss，自动改用 %ss 段", self.task.label, limit, self.chunk
-                )
+                if learned:
+                    self.stalled = 0
+                    self.runner.log.info(
+                        "  %s 服务端限制单段 ≤%ss，自动改用 %ss 段", self.task.label, limit, self.chunk
+                    )
+                else:
+                    self.stalled += 1
                 self._refresh()
                 self._replan()
+                if self.stalled > 3:
+                    self.failed = True
+                    self.detail = f"服务端持续拒绝上报（单段上限 {limit}s），放弃该活动"
+                    return "failed"
                 return "progress"
             self.stalled += 1
             self.detail = f"{start}-{end}s 上报异常：{exc}"
@@ -695,5 +712,5 @@ class AccountRunner:
         if self.on_result is not None:
             try:
                 self.on_result(res)
-            except Exception:  # pragma: no cover - UI 回调不应影响主流程
-                pass
+            except Exception as exc:  # UI 回调不应影响主流程，但必须留痕
+                self.log.debug("进度回调失败：%s", exc, exc_info=True)

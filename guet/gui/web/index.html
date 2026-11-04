@@ -40,6 +40,8 @@
   }
   .acc .dot{width:7px;height:7px;border-radius:50%;background:#c9ccd6;flex:0 0 7px}
   .acc.on .dot{background:var(--ok);box-shadow:0 0 0 3px rgba(18,184,134,.14)}
+  .acc.picked{border-color:#b9b9ef;background:#f7f7ff}
+  .acc .pick{accent-color:var(--accent);cursor:pointer;flex:0 0 auto;margin:0}
   .acc .name{font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .acc .sub{font-size:11px;color:var(--muted)}
   .icon-btn{
@@ -193,7 +195,7 @@ const SPEEDS = [
   ['realtime','realtime','真实时间，多路并行'],
   ['tick','tick','单线程定时'],
 ];
-let state = {accounts:[], courses:[], selected:new Set(), speed:'normal', logSeq:0, busy:false};
+let state = {accounts:[], courses:[], selected:new Set(), picked:new Set(), planned:{}, speed:'normal', logSeq:0, busy:false};
 
 function $(id){ return document.getElementById(id); }
 function toast(msg){
@@ -221,7 +223,9 @@ function renderAccounts(){
     return;
   }
   box.innerHTML = state.accounts.map(a => `
-    <div class="acc ${a.logged_in?'on':''}">
+    <div class="acc ${a.logged_in?'on':''} ${state.picked.has(a.name)?'picked':''}">
+      <input type="checkbox" class="pick" ${state.picked.has(a.name)?'checked':''}
+             onchange="toggleAccount('${esc(a.name)}')" title="勾选后才会执行这个账号">
       <div class="dot"></div>
       <div style="min-width:0">
         <div class="name">${esc(a.name)}</div>
@@ -256,8 +260,9 @@ function renderProgress(){
   const entries = Object.entries(state.progress || {});
   if (!entries.length){ box.innerHTML = ''; return; }
   box.innerHTML = entries.map(([name, p]) => {
-    const total = (p.done||0)+(p.failed||0)+(p.pending||0);
-    const pct = total ? Math.round((p.done/total)*100) : 0;
+    const done = p.done||0, failed = p.failed||0, pending = p.pending||0;
+    const total = state.planned[name] || (done+failed+pending);
+    const pct = total ? Math.min(100, Math.round(((done+failed)/total)*100)) : 0;
     return `<div class="prog-row">
       <div>${esc(name)}</div>
       <div class="track"><i style="width:${pct}%"></i></div>
@@ -282,7 +287,16 @@ async function refresh(){
   try{
     const data = await api('/api/status');
     state.accounts = data.accounts || [];
+    state.planned = data.planned || {};
     state.browser = data.browser || '';
+    // 默认只勾选第一个已登录账号，避免"看着 A 却把 B 也跑了"
+    if (!state.picked.size) {
+      const first = state.accounts.find(a => a.logged_in && a.enabled !== false);
+      if (first) state.picked.add(first.name);
+    }
+    for (const name of [...state.picked]) {
+      if (!state.accounts.some(a => a.name === name)) state.picked.delete(name);
+    }
     state.status = data.status;
     state.progress = data.progress || {};
     if (data.error) $('courseHint').textContent = data.error;
@@ -334,6 +348,11 @@ function toggleCourse(id){
   if (state.selected.has(id)) state.selected.delete(id); else state.selected.add(id);
   renderCourses();
 }
+function toggleAccount(name){
+  if (state.picked.has(name)) state.picked.delete(name); else state.picked.add(name);
+  renderAccounts();
+}
+
 function pickSpeed(id){
   state.speed = id;
   renderSpeeds();
@@ -358,9 +377,20 @@ async function bench(){
 }
 
 async function start(){
-  const accounts = state.accounts.filter(a => a.logged_in).map(a => a.name);
-  if (!accounts.length) return toast('先登录账号');
+  const accounts = state.accounts
+    .filter(a => state.picked.has(a.name) && a.logged_in && a.enabled !== false)
+    .map(a => a.name);
+  if (!accounts.length) return toast('先勾选并登录账号');
   if (!state.selected.size) return toast('先选课程');
+
+  // 先问一次计划，拿到任务总数给进度条当分母
+  let planned = 0;
+  try{
+    const plan = await api('/api/plan', {name: accounts[0], courses: [...state.selected]});
+    planned = (plan.plans || []).reduce((sum, x) => sum + (x.videos || 0) + (x.materials || 0), 0);
+    if (planned) state.planned = Object.fromEntries(accounts.map(n => [n, planned]));
+  }catch(e){ /* 拿不到就用事件累计当分母 */ }
+
   try{
     await api('/api/start', {
       accounts,
@@ -368,13 +398,14 @@ async function start(){
       speed: state.speed,
       target: Number($('target').value || 100),
       lanes: state.speed === 'realtime' ? $('lanes').value : null,
+      planned,
     });
     toast('已开始');
     await refresh();
   }catch(e){ toast(e.message); }
 }
 async function stop(){
-  try{ await api('/api/stop'); toast('正在停止…'); await refresh(); }
+  try{ await api('/api/stop', {}); toast('正在停止…'); await refresh(); }
   catch(e){ toast(e.message); }
 }
 

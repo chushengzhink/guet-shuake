@@ -216,8 +216,14 @@ def _run_one_locked(
             )
 
         outcome.before = _completeness(holder["client"], course_ids)
-        for cid, items in runner.run(course_ids, only=only, dry_run=dry_run).items():
-            outcome.results[cid] = items
+        # 逐课程累计：后面某门课抛异常时，前面已完成的结果也不会丢
+        for cid in course_ids:
+            try:
+                outcome.results[cid] = runner.run_course(cid, only=only, dry_run=dry_run)
+            except Exception as exc:
+                logger.error("课程 %s 执行失败：%s", cid, exc)
+                outcome.error = f"{type(exc).__name__}: {exc}"
+                break
         outcome.after = _completeness(holder["client"], course_ids)
         outcome.requests = runner.request_count
         outcome.ok = all(
@@ -275,10 +281,16 @@ def run_all(
 
     outcomes: list[AccountOutcome] = []
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="acc") as pool:
-        futures = {
-            pool.submit(run_one, app, acc, cache, global_limiter, only, dry_run, on_result): acc
-            for acc in accounts
-        }
+        futures = {}
+        for acc in accounts:
+            # runner 只会回调 (result)，这里按账号补上名字，避免 GUI 的回调签名对不上
+            callback = (
+                (lambda result, _name=acc.name: on_result(_name, result))
+                if on_result is not None else None
+            )
+            futures[pool.submit(
+                run_one, app, acc, cache, global_limiter, only, dry_run, callback
+            )] = acc
         for future in as_completed(futures):
             account = futures[future]
             try:

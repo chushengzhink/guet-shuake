@@ -100,7 +100,13 @@ def run_ticks(
 
     while active:
         if cancel_requested():
+            # 取消是明确终态：把在跑的活动记为待续，别让汇总看起来「全部成功」
             runner.log.warning("收到停止请求，收尾退出（进度已写入 state）")
+            for job in list(active):
+                result = job.result(STATUS_PENDING)
+                results.append(result)
+                runner._record(result)
+            active.clear()
             break
         batch = list(active)
         if threads > 1 and len(batch) > 1:

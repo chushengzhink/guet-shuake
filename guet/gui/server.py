@@ -19,11 +19,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from .. import cancel, scheduler, session
+from .. import cancel, report, scheduler, session
 from ..benchmark import measure, plan_scale, recommend
 from ..browser import BrowserUnavailable, find_edge_exe
 from ..client import SessionExpired, TronClassError
-from ..config import AppConfig, ConfigError, load_config
+from ..config import SPEEDS, AppConfig, ConfigError, _check_lanes, load_config
 from ..planner import ACTION_MATERIAL, ACTION_VIDEO, build_plan
 from ..runner import resolve_lanes
 from ..session import LoginRequired, SessionError
@@ -94,6 +94,9 @@ class AppState:
         self.error = ""
         self.events: list[dict[str, Any]] = []
         self.progress: dict[str, dict[str, int]] = {}
+        self.planned: dict[str, int] = {}
+        self.run_id = 0
+        self.last_outcomes: list[dict[str, Any]] = []
         self.app: AppConfig | None = None
         self.server: ThreadingHTTPServer | None = None
 
@@ -126,33 +129,73 @@ class AppState:
         return self.app
 
     # ---- 账号 ----
+    def _validate_accounts_file(self, path: Path) -> None:
+        """用真实加载流程校验候选 accounts 文件；不通过就抛 ConfigError。"""
+        load_config(self.root, self.config_path, path)
+
+    def _write_accounts(self, raw: dict) -> None:
+        """先写临时文件并验证，通过后再原子替换 —— 非法账号绝不落盘。"""
+        import os
+
+        import yaml
+
+        text = yaml.safe_dump(raw, allow_unicode=True, sort_keys=False)
+        tmp = self.accounts_path.with_name(self.accounts_path.name + ".pending")
+        tmp.write_text(text, encoding="utf-8")
+        try:
+            self._validate_accounts_file(tmp)
+        except ConfigError:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            raise
+        os.replace(tmp, self.accounts_path)
+        self.reload()
+
     def add_account(self, name: str) -> None:
         import yaml
 
-        name = name.strip()
+        name = (name or "").strip()
         if not name:
             raise ConfigError("账号标识不能为空")
-        raw = yaml.safe_load(self.accounts_path.read_text(encoding="utf-8")) or {}
-        accounts = raw.get("accounts") or []
-        if any(str(item.get("name")) == name for item in accounts if isinstance(item, dict)):
-            raise ConfigError(f"账号 {name} 已存在")
-        accounts.append({"name": name, "enabled": True})
-        raw["accounts"] = accounts
-        self.accounts_path.write_text(
-            yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8"
-        )
-        self.reload()
+        with self.lock:                       # 并发添加时别互相覆盖
+            raw = yaml.safe_load(self.accounts_path.read_text(encoding="utf-8")) or {}
+            accounts = raw.get("accounts") or []
+            if any(str(item.get("name")) == name for item in accounts if isinstance(item, dict)):
+                raise ConfigError(f"账号 {name} 已存在")
+            accounts.append({"name": name, "enabled": True})
+            raw["accounts"] = accounts
+            self._write_accounts(raw)
 
     def delete_account(self, name: str) -> None:
         import yaml
 
-        raw = yaml.safe_load(self.accounts_path.read_text(encoding="utf-8")) or {}
-        raw["accounts"] = [a for a in (raw.get("accounts") or [])
-                           if not (isinstance(a, dict) and str(a.get("name")) == name)]
-        self.accounts_path.write_text(
-            yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8"
-        )
-        self.reload()
+        with self.lock:
+            raw = yaml.safe_load(self.accounts_path.read_text(encoding="utf-8")) or {}
+            raw["accounts"] = [a for a in (raw.get("accounts") or [])
+                               if not (isinstance(a, dict) and str(a.get("name")) == name)]
+            self._write_accounts(raw)
+
+    # ---- 运行状态（F05：状态转换必须在锁内，且用 run_id 防覆盖）----
+    def begin(self, target: str) -> int:
+        with self.lock:
+            if self.status != "idle":
+                raise ConfigError(f"当前状态是「{self.status}」，请等它结束再操作")
+            self.status = target
+            self.run_id += 1
+            return self.run_id
+
+    def finish(self, run_id: int) -> None:
+        with self.lock:
+            if self.run_id == run_id:      # 只结束自己那次运行，不覆盖新的
+                self.status = "idle"
+
+    def mark_stopping(self) -> str:
+        with self.lock:
+            if self.status == "running":
+                self.status = "stopping"
+            return self.status
 
     # ---- 快照 ----
     def status_payload(self) -> dict[str, Any]:
@@ -174,6 +217,7 @@ class AppState:
             "accounts": accounts,
             "browser": find_edge_exe() or "内置 Chromium",
             "progress": self.progress,
+            "planned": self.planned,
             "events": self.events[-80:],
         }
 
@@ -198,12 +242,13 @@ def api_login(state: AppState, body: dict) -> dict:
     if app is None:
         raise ConfigError(state.error or "配置未就绪")
     account = app.account(str(body.get("name") or ""))
-    state.status = "logging-in"
+    # F05：只有空闲状态才能登录，且用 run_id 保证只结束自己这次
+    run_id = state.begin("logging-in")
     try:
         session.login(app, account, headless=False)
         return {"ok": True, "account": account.name}
     finally:
-        state.status = "idle"
+        state.finish(run_id)
 
 
 def _client_for(state: AppState, name: str):
@@ -309,34 +354,53 @@ def api_start(state: AppState, body: dict) -> dict:
     app = state.app
     if app is None:
         raise ConfigError(state.error or "配置未就绪")
-    if state.status == "running":
-        raise ConfigError("已经有任务在跑了")
+
     names = [str(n) for n in (body.get("accounts") or [])]
     if not names:
         raise ConfigError("先选账号")
-    course_ids = [int(c) for c in (body.get("courses") or [])]
-    if not course_ids:
+    try:
+        course_ids = [int(c) for c in (body.get("courses") or [])]
+    except (TypeError, ValueError) as exc:
+        raise ConfigError("课程 ID 必须是整数") from exc
+    if not course_ids or any(cid <= 0 for cid in course_ids):
         raise ConfigError("先选课程")
     speed = str(body.get("speed") or "normal")
-    target = int(body.get("target") or 100)
+    if speed not in SPEEDS:
+        raise ConfigError(f"节奏只能是 {SPEEDS}，收到 {speed!r}")
+    try:
+        target = int(body.get("target") or 100)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"目标百分比必须是整数，收到 {body.get('target')!r}") from exc
+    if not 1 <= target <= 100:
+        raise ConfigError("目标百分比必须在 1~100")
     lanes = body.get("lanes")
+    if lanes not in (None, "", "auto"):
+        _check_lanes(lanes, "并行路数")
 
-    accounts = [app.account(name) for name in names]
+    accounts = []
+    for name in names:
+        account = app.account(name)
+        if not account.enabled:                       # F04：禁用账号不得执行
+            raise ConfigError(f"账号 {name} 已禁用")
+        accounts.append(account)
+
+    # F05：只有 idle 才能启动；run_id 保证旧 worker 不会把新运行置为 idle
+    run_id = state.begin("running")
     for account in accounts:
         account.course_ids = list(course_ids)
         account.speed = speed
         account.target_percent = target
-        if lanes not in (None, "", "auto"):
+        if lanes not in (None, ""):
             account.realtime_lanes = lanes
-        elif lanes == "auto":
-            account.realtime_lanes = "auto"
     app.runtime.speed = speed
     app.runtime.target_percent = target
 
     cancel.reset()
-    state.status = "running"
-    state.progress = {name: {"done": 0, "failed": 0, "pending": 0} for name in names}
-    state.events = []
+    with state.lock:
+        state.progress = {name: {"done": 0, "failed": 0, "pending": 0} for name in names}
+        state.planned = {name: int(body.get("planned") or 0) for name in names}
+        state.events = []
+        state.last_outcomes = []
 
     def on_result(account_name: str, result) -> None:
         with state.lock:
@@ -358,11 +422,22 @@ def api_start(state: AppState, body: dict) -> dict:
 
     def worker() -> None:
         try:
-            scheduler.run_all(app, accounts, on_result=on_result)
+            outcomes = scheduler.run_all(app, accounts, on_result=on_result)
+            # F10：保存最终结果（GUI 之前把返回值整个丢掉了）
+            with state.lock:
+                state.last_outcomes = [o.to_dict() for o in outcomes]
+            failed = [o for o in outcomes if not o.ok]
+            if failed:
+                with state.lock:
+                    state.error = "；".join(f"{o.account}: {o.error or '有失败项'}" for o in failed)
+            try:
+                report.write_result(state.root / "result.json", outcomes)
+            except Exception:  # pragma: no cover - 报告失败不影响任务
+                log.debug("写 result.json 失败", exc_info=True)
         except Exception:  # pragma: no cover
             log.error("执行异常：\n%s", traceback.format_exc())
         finally:
-            state.status = "idle"
+            state.finish(run_id)
 
     threading.Thread(target=worker, name="gui-run", daemon=True).start()
     return {"ok": True}
@@ -402,11 +477,11 @@ def api_selftest(state: AppState) -> dict:
 
 
 def api_stop(state: AppState) -> dict:
-    if state.status == "running":
+    status = state.mark_stopping()
+    if status == "stopping":
         cancel.request()
-        state.status = "stopping"
         log.warning("收到停止请求……")
-    return {"ok": True, "status": state.status}
+    return {"ok": True, "status": status}
 
 
 def api_logs(state: AppState, after: int) -> dict:

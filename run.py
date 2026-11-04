@@ -146,10 +146,9 @@ def apply_overrides(app: AppConfig, args) -> None:
         value = getattr(args, attr, None)
         if value is not None:
             setattr(rt, attr, value)
-            if attr in ("speed", "engine", "target_percent"):
+            if attr in ("speed", "engine", "target_percent", "per_account_jobs"):
                 for acc in app.accounts:  # 命令行优先于账号级覆盖
-                    setattr(acc, {"speed": "speed", "engine": "engine",
-                                  "target_percent": "target_percent"}[attr], None)
+                    setattr(acc, attr, None)
     lanes = getattr(args, "lanes", None)
     if lanes is not None:
         rt.realtime_lanes = _parse_lanes_arg(lanes)

@@ -20,6 +20,11 @@ DEFAULT_UA = (
 ENGINES = ("http", "browser")
 SPEEDS = ("realtime", "tick", "probe", "normal", "human")
 _NAME_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,40}$")
+_RESERVED_NAMES = {
+    "con", "prn", "aux", "nul",
+    *{f"com{i}" for i in range(1, 10)},
+    *{f"lpt{i}" for i in range(1, 10)},
+}
 
 
 class ConfigError(RuntimeError):
@@ -350,6 +355,19 @@ def load_config(
     return app
 
 
+def _check_account_name(name: str) -> None:
+    """账号名会直接当目录名用，按 Windows 路径语义拦掉危险值。"""
+    if not _NAME_RE.match(name):
+        raise ConfigError(
+            f"账号名 {name!r} 只能包含字母数字与 _ . - 且不超过 40 字符（会作为目录名）"
+        )
+    if name in {".", ".."} or name.endswith(".") or name.endswith(" "):
+        raise ConfigError(f"账号名 {name!r} 不能是点路径或以点/空格结尾")
+    stem = name.split(".")[0].lower()
+    if stem in _RESERVED_NAMES:
+        raise ConfigError(f"账号名 {name!r} 是 Windows 保留设备名（{stem.upper()}）")
+
+
 def validate(app: AppConfig) -> None:
     rt = app.runtime
     if rt.engine not in ENGINES:
@@ -371,7 +389,10 @@ def validate(app: AppConfig) -> None:
         ("timeout", rt.timeout, 0.1),
         ("rps", rt.rps, 0.1),
         ("global_rps", rt.global_rps, 0.1),
+        ("gap_seconds", rt.gap_max, 0.0),
     ):
+        if not math.isfinite(float(value)):          # --rps inf 这类也要拦
+            raise ConfigError(f"{label} 必须是有限数字，当前 {value!r}")
         if float(value) < low:
             raise ConfigError(f"{label} 必须大于等于 {low}，当前 {value!r}")
     for label, value in (
@@ -390,10 +411,7 @@ def validate(app: AppConfig) -> None:
 
     seen: set[str] = set()
     for acc in app.accounts:
-        if not _NAME_RE.match(acc.name):
-            raise ConfigError(
-                f"账号名 {acc.name!r} 只能包含字母数字与 _ . - 且不超过 40 字符（会作为目录名）"
-            )
+        _check_account_name(acc.name)
         if acc.name in seen:
             raise ConfigError(f"账号名重复：{acc.name}")
         seen.add(acc.name)

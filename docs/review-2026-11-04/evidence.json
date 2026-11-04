@@ -1,0 +1,149 @@
+{
+  "stop_GET": {
+    "http": 404,
+    "cancelled": false
+  },
+  "GUI_callback_and_outcomes": {
+    "events": [],
+    "progress": {
+      "acc01": {
+        "done": 0,
+        "failed": 0,
+        "pending": 0
+      }
+    },
+    "error": "",
+    "status": "idle"
+  },
+  "GUI_start_validation": {
+    "target": 101,
+    "speed": "invalid",
+    "status": "running",
+    "cancelled": false
+  },
+  "GUI_login_overwrites_run_status": "idle",
+  "GUI_invalid_account_persisted": {
+    "configured": false,
+    "saved_invalid_name": true
+  },
+  "earlier_course_results_lost": {
+    "results": {},
+    "done": 0,
+    "error": "TronClassError: second course fails"
+  },
+  "dotdot_account_profile": ".",
+  "CLI_per_account_override": 8,
+  "CLI_nonfinite_rate_accepted": true,
+  "cache_scope": [
+    {
+      "id": "site-or-subcourse-A"
+    }
+  ],
+  "wizard_yes_prompts": 1,
+  "wizard_missing_accounts_fallback": "accounts.yaml",
+  "cookie_sent_to_unrelated_domain": true,
+  "python_syntax_files": 37,
+  "cancelled_tick": {
+    "results": 0,
+    "records": 0,
+    "server_ranges": {
+      "1": [
+        [
+          0,
+          100
+        ]
+      ]
+    },
+    "sleep_requested": 120.0
+  },
+  "oversize_retry_loop": {
+    "calls": [
+      [
+        0,
+        300
+      ],
+      [
+        0,
+        300
+      ],
+      [
+        0,
+        300
+      ],
+      [
+        0,
+        300
+      ],
+      [
+        0,
+        300
+      ],
+      [
+        0,
+        300
+      ],
+      [
+        0,
+        300
+      ],
+      [
+        0,
+        300
+      ]
+    ],
+    "failed": false,
+    "stalled": 0
+  },
+  "fragmented_resume": {
+    "seconds_for_two_100_second_holes": 900.0,
+    "calls": [
+      [
+        1,
+        100,
+        200
+      ],
+      [
+        1,
+        200,
+        300
+      ],
+      [
+        1,
+        300,
+        400
+      ],
+      [
+        1,
+        400,
+        500
+      ],
+      [
+        1,
+        500,
+        600
+      ],
+      [
+        1,
+        600,
+        700
+      ],
+      [
+        1,
+        700,
+        800
+      ],
+      [
+        1,
+        800,
+        900
+      ]
+    ]
+  },
+  "suite": {
+    "exit": 0,
+    "summary": [
+      "Ran 83 tests in 0.798s",
+      "OK"
+    ]
+  }
+}

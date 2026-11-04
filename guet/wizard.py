@@ -407,6 +407,9 @@ def run_wizard(
     ask_fn: AskFn = ask or input
 
     def safe_ask(prompt: str) -> str:
+        # --yes：所有提问一律取默认值，绝不停下来等人
+        if assume_yes:
+            return ""
         try:
             return ask_fn(prompt)
         except EOFError:
@@ -428,10 +431,13 @@ def run_wizard(
         return 1
 
     ensure_config_file(root)
-    accounts_file = (
-        accounts_path if accounts_path and accounts_path.exists()
-        else ensure_accounts_file(root, safe_ask)
-    )
+    if accounts_path is not None:
+        if not accounts_path.exists():
+            report.info(f"[red]指定的账号文件不存在：{accounts_path}[/red]")
+            return 1
+        accounts_file = accounts_path
+    else:
+        accounts_file = ensure_accounts_file(root, safe_ask)
     try:
         app = load_config(root, config_path, accounts_file)
     except ConfigError as exc:
