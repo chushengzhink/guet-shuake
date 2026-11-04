@@ -19,6 +19,8 @@ OUT = ROOT / "docs" / "screenshot.png"
 DEMO_JS = r"""
 () => {
   for (let i = 1; i < 5000; i++) { clearInterval(i); clearTimeout(i); }
+  refresh = function(){};          // 冻结轮询，别让后端数据把演示数据覆盖回去
+  state.autoLoaded = true;
   const toastEl = document.getElementById('toast');
   if (toastEl) { toastEl.classList.remove('show'); toastEl.textContent = ''; }
   state.accounts = [
@@ -28,9 +30,18 @@ DEMO_JS = r"""
   state.browser = 'Microsoft Edge 156';
   state.status = 'running';
   state.courses = [
-    {id: 29066, name: '基础工业工程（挑战性学习课程）-2610082', code: '2610082', completed: 63, total: 74, percent: 87.4},
-    {id: 29117, name: '管理学原理-2610083', code: '2610083', completed: 12, total: 48, percent: 25.0},
-    {id: 29142, name: '运筹学-2610084', code: '2610084', completed: 41, total: 52, percent: 78.8},
+    {id: 29066, name: '基础工业工程（挑战性学习课程）-2610082', code: '2610082', completed: 63, total: 74, percent: 87.4,
+     todo_video: 0, todo_material: 0, manual: 3, other: 8, auto: 0},
+    {id: 29117, name: '管理学原理-2610083', code: '2610083', completed: 12, total: 48, percent: 25.0,
+     todo_video: 18, todo_material: 8, manual: 10, other: 0, auto: 26},
+    {id: 29142, name: '运筹学-2610084', code: '2610084', completed: 41, total: 52, percent: 78.8,
+     todo_video: 3, todo_material: 2, manual: 6, other: 0, auto: 5},
+    {id: 29143, name: '工程经济学-2614820', code: '2614820', completed: 8, total: 8, percent: 100,
+     todo_video: 0, todo_material: 0, manual: 0, other: 0, auto: 0},
+    {id: 29144, name: '大学物理C-2610582', code: '2610582', completed: 11, total: 12, percent: 91.7,
+     todo_video: 0, todo_material: 0, manual: 0, other: 1, auto: 0},
+    {id: 29145, name: '机械设计基础-2614831', code: '2614831', completed: 0, total: 0, percent: 0,
+     todo_video: 0, todo_material: 0, manual: 0, other: 0, auto: 0},
   ];
   state.selected = new Set([29066, 29142]);
   state.speed = 'probe';
@@ -93,7 +104,9 @@ def main() -> int:
             page.goto(url, wait_until="load")
             page.wait_for_timeout(1200)
             page.evaluate(DEMO_JS)
-            page.wait_for_timeout(400)
+            page.wait_for_timeout(2000)
+            page.evaluate(DEMO_JS)      # 再注入一次，压掉可能还没回来的 refresh
+            page.wait_for_timeout(500)
             page.screenshot(path=str(OUT))
             browser.close()
         print("写入", OUT, f"{OUT.stat().st_size / 1024:.0f} KB")

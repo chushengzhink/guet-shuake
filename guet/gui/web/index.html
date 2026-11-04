@@ -86,6 +86,13 @@
   .course .meta{font-size:11.5px;color:var(--muted);display:flex;justify-content:space-between}
   .bar{height:5px;border-radius:4px;background:#eceef6;margin-top:8px;overflow:hidden}
   .bar>i{display:block;height:100%;border-radius:4px;background:linear-gradient(90deg,#8f8ff5,#6d6bf0)}
+  .tags{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
+  .tag{font-size:11px;padding:2px 7px;border-radius:999px;background:#eef0f6;color:#5a6072;white-space:nowrap}
+  .tag.video{background:#eef0ff;color:#4b4bc4}
+  .tag.material{background:#e6f4ff;color:#16659e}
+  .tag.manual{background:#fff4e6;color:#b35c00}
+  .tag.none{background:#f1f3f5;color:#868e96}
+  .tag.wait{background:#f1f3f5;color:#adb5bd}
   .chips{display:flex;flex-wrap:wrap;gap:8px}
   .chip{border:1px solid var(--line);border-radius:999px;padding:7px 13px;font-size:12.5px;
         cursor:pointer;background:#fff;transition:.15s;color:var(--ink)}
@@ -195,7 +202,7 @@ const SPEEDS = [
   ['realtime','realtime','真实时间，多路并行'],
   ['tick','tick','单线程定时'],
 ];
-let state = {accounts:[], courses:[], selected:new Set(), picked:new Set(), planned:{}, speed:'normal', logSeq:0, busy:false};
+let state = {accounts:[], courses:[], selected:new Set(), picked:new Set(), planned:{}, speed:'normal', logSeq:0, busy:false, autoLoaded:false};
 
 function $(id){ return document.getElementById(id); }
 function toast(msg){
@@ -253,6 +260,7 @@ function renderCourses(){
       <div class="t">${esc(c.name)}</div>
       <div class="meta"><span>${esc(c.code||'')}</span><span>${c.completed}/${c.total} · ${c.percent}%</span></div>
       <div class="bar"><i style="width:${Math.min(100,c.percent)}%"></i></div>
+      ${courseTags(c)}
     </div>`).join('');
 }
 function renderProgress(){
@@ -308,6 +316,11 @@ async function refresh(){
     state.progress = data.progress || {};
     if (data.error) $('courseHint').textContent = data.error;
     renderAccounts(); renderProgress(); renderRunState();
+    // 首次拿到账号后自动拉一次课程（loadCourses 比 refresh 先跑，那时账号还是空的）
+    if (!state.autoLoaded && state.accounts.some(a => a.logged_in)) {
+      state.autoLoaded = true;
+      loadCourses();
+    }
   }catch(e){ /* 后端还没起好时忽略 */ }
 }
 
@@ -336,7 +349,7 @@ async function login(name){
 async function loadCourses(){
   const acc = currentAccount();
   if (!acc || !acc.logged_in) return toast('先登录账号');
-  $('courseHint').textContent = '正在读取课程…';
+  $('courseHint').textContent = '正在读取课程并统计每门课的可刷项…（首次会慢几秒）';
   try{
     const data = await api('/api/courses', {name: acc.name});
     state.courses = data.courses || [];
@@ -351,6 +364,21 @@ async function loadCourses(){
     $('sessionState').className = 'status-pill';
   }
 }
+function courseTags(c){
+  if (c.auto === null || c.auto === undefined) {
+    return '<div class="tags"><span class="tag wait">统计中…</span></div>';
+  }
+  const parts = [];
+  if (c.todo_video) parts.push(`<span class="tag video">视频 ${c.todo_video}</span>`);
+  if (c.todo_material) parts.push(`<span class="tag material">资料 ${c.todo_material}</span>`);
+  if (c.manual) parts.push(`<span class="tag manual">作业/考试 ${c.manual}</span>`);
+  if (c.other) parts.push(`<span class="tag none" title="平台显示仍未完成，但不是视频/资料/作业——通常是考试或成绩未发布的活动">待完成 ${c.other}</span>`);
+  if (!parts.length) {
+    parts.push(c.total ? '<span class="tag none">已无可刷项</span>' : '<span class="tag none">没有活动</span>');
+  }
+  return `<div class="tags">${parts.join('')}</div>`;
+}
+
 function toggleCourse(id){
   if (state.selected.has(id)) state.selected.delete(id); else state.selected.add(id);
   renderCourses();

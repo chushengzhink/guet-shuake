@@ -24,7 +24,7 @@ from ..benchmark import measure, plan_scale, recommend
 from ..browser import BrowserUnavailable, find_edge_exe
 from ..client import SessionExpired, TronClassError
 from ..config import SPEEDS, AppConfig, ConfigError, _check_lanes, load_config
-from ..planner import ACTION_MATERIAL, ACTION_VIDEO, build_plan
+from ..planner import ACTION_MATERIAL, ACTION_VIDEO, MANUAL_TYPES, build_plan
 from ..runner import resolve_lanes
 from ..session import LoginRequired, SessionError
 from ..transport import TransportError
@@ -303,6 +303,41 @@ def _client_for(state: AppState, name: str):
         return account, client, transport
 
 
+def _course_cache(state: AppState):
+    cache = getattr(state, "_course_cache", None)
+    if cache is None:
+        cache = scheduler.CourseCache(state.root / "course-cache.json", 1800)
+        state._course_cache = cache
+    return cache
+
+
+def _course_breakdown(cache, client, cid: int) -> dict:
+    """统计一门课里「还能自动刷」和「只能人工」的数量（课程卡上直接展示）。"""
+    activities = (cache.bundle(cid, client) or {}).get("activities") or []
+    reads = client.activity_reads_for_user(cid)
+    todo_video = todo_material = 0
+    manual = 0
+    for activity in activities:
+        atype = str(activity.get("type") or "")
+        try:
+            aid = int(activity.get("id"))
+        except (TypeError, ValueError):
+            continue
+        finished = (reads.get(aid) or {}).get("completeness") == "full"
+        if atype == "online_video":
+            todo_video += 0 if finished else 1
+        elif atype == "material":
+            todo_material += 0 if finished else 1
+        elif atype in MANUAL_TYPES:
+            manual += 0 if finished else 1      # 只算还没做的作业/考试
+    return {
+        "todo_video": todo_video,
+        "todo_material": todo_material,
+        "manual": manual,
+        "auto": todo_video + todo_material,
+    }
+
+
 def api_courses(state: AppState, body: dict) -> dict:
     account, client, transport = _client_for(state, str(body.get("name") or ""))
     try:
@@ -331,7 +366,32 @@ def api_courses(state: AppState, body: dict) -> dict:
                 "completed": completed,
                 "total": total,
                 "percent": round(percent, 1),
+                "todo_video": None,      # None = 还没统计
+                "todo_material": None,
+                "manual": None,
+                "auto": None,
             })
+
+        # 并发补构成统计：activities 走缓存，第二次刷新几乎是瞬间
+        cache = _course_cache(state)
+        if rows:
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=3, thread_name_prefix="course") as pool:
+                futures = {pool.submit(_course_breakdown, cache, client, row["id"]): row
+                           for row in rows}
+                for future, row in futures.items():
+                    try:
+                        row.update(future.result(timeout=60))
+                    except Exception as exc:  # 单门课统计失败不影响列表
+                        log.debug("统计课程 %s 构成失败：%s", row["id"], exc)
+                        row.update({"todo_video": 0, "todo_material": 0, "manual": 0, "auto": 0})
+
+        # 平台口径里还有「其它类型」的未完成活动（考试常不在 activities 列表里）
+        for row in rows:
+            remain = max(0, int(row.get("total") or 0) - int(row.get("completed") or 0))
+            known = int(row.get("auto") or 0) + int(row.get("manual") or 0)
+            row["other"] = max(0, remain - known)
         return {"ok": True, "courses": rows, "account": account.name}
     finally:
         transport.close()
