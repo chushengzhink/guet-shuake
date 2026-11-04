@@ -1,0 +1,27 @@
+# 会话 / 账号 / 状态 —— 绝不入库
+profiles/
+data/
+config.yaml
+accounts.yaml
+cookies*.json
+storage_state*.json
+
+# 抓包原件（几十 MB）
+*.har
+*.har.gz
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

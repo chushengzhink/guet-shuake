@@ -1,0 +1,246 @@
+# GUET 畅课（TronClass）后台刷课工具
+
+**后台起 Chromium 拿会话，之后直接调接口刷进度，不做任何模拟点击；支持多账号并行 + 断点续跑 + 自动降档。**
+
+接口全部由仓库里那份抓包（`content-autofill.googleapis.com_*.har`，969 条请求）实测反推，不是猜的。
+
+---
+
+## 1. 它到底怎么刷的
+
+TronClass 的视频进度就是一组「已看区间」：
+
+```http
+POST /api/course/activities-read/92918
+Content-Type: application/json
+
+{"start":0,"end":4}
+```
+
+```json
+{"activity_id":92918,"completeness":"part","data":{"completeness":1,"ranges":[[0,4]]}}
+```
+
+抓包里一个已经刷满的视频，`data` 长这样：
+
+```json
+{"completeness":100,"end":743,"ranges":[[0,743]]}
+```
+
+也就是说：**把这组区间补到 `[0, floor(时长)]`，进度就是 100%**。资料类活动则按附件计数：
+
+```http
+POST /api/course/activities-read/83055
+{"upload_id":2764492}
+```
+```json
+{"data":{"completeness":75,"upload_ids":[2764492,2764149,2764487]}}
+```
+
+所以本工具做三件事：
+
+| 活动类型 | 处理方式 | 完成标准（抓包实测） |
+|---|---|---|
+| `online_video`（视频） | 按段 `POST /api/course/activities-read/{id}` 补区间 | `completeness` ≥ 80 |
+| `material`（资料/课件） | 逐个 `upload_id` 上报已读 | upload 全部已读 = 100 |
+| `homework` / `exam` | **不碰**，只在报告里标"需人工" | 需要真的交作业/考试 |
+
+同时把 `/statistics/api/online-videos?jwt=...` 的播放埋点按真实区间同步一份（教师端"学习时长/行为轨迹"吃这份数据），可用 `--no-telemetry` 关掉。
+
+### 课程事实（抓包当天）
+
+课程 `29066`《基础工业工程（挑战性学习课程）-2610082》：74 个活动 = 60 个 learning + 14 个 exam；
+learning 里 `online_video` 30、`material` 18、`homework` 12；当时 `total_completed=22`、`study_completeness=33.0%`。
+
+---
+
+## 2. 接口清单（HAR 反推，全在 `courses.guet.edu.cn`）
+
+| 用途 | 方法 / 路径 | 备注 |
+|---|---|---|
+| 登录链 | `GET /user/index` → 302 `cas.guet.edu.cn/authserver` → 303 `identity.guet.edu.cn/.../broker/cas-client/login` → 302 `/user/index?ticket=...` | 交给真实浏览器跑 |
+| 会话 cookie | `sduuid` / `role_token` / `session` | **每条响应都 Set-Cookie 轮换**，客户端必须自动回写 |
+| 会话体检 | `GET /api/config?no-intercept=true` | 未登录时 WAF 直接 403 |
+| 课程列表 | `POST /api/my-courses` | `conditions.semester_id=["14"]`、`academic_year_id=["5"]` |
+| 学期/学年 | `GET /api/my-semesters`、`GET /api/my-academic-years` | 用于自动发现当前学期 |
+| 课程完整度 | `GET /api/course/{cid}/my-completeness` | `completed_result`、`study_completeness` |
+| 模块 | `GET /api/courses/{cid}/modules` | 日志分组 |
+| 活动列表 | `GET /api/courses/{cid}/activities?sub_course_id=0` | 248 KB，含时长/附件/完成标准 |
+| 活动详情 | `GET /api/activities/{aid}?sub_course_id=0` | `data.allow_forward_seeking`、`uploads[].videos[].duration` |
+| 已读汇总 | `GET /api/course/{cid}/activity-reads-for-user` | 每个活动 `full`/`part` + `ranges`/`upload_ids` |
+| 单活动已读 | `GET /api/course/activity-read/{aid}` | 断点续跑的依据 |
+| **视频上报** | `POST /api/course/activities-read/{aid}` `{"start":s,"end":e}` | 整数秒，返回 `data.ranges` / `completeness` |
+| **资料上报** | `POST /api/course/activities-read/{aid}` `{"upload_id":uid}` | 返回 `data.completeness` 百分比 |
+| 统计埋点 | `POST /statistics/api/online-videos?jwt=<mgsJwt>`、`POST /statistics/api/materials?jwt=` | `jwt` 来自课程页 HTML 的 `window.statisticsSettings.mgsJwt` |
+| 取 jwt | `GET /course/{cid}/learning-activity` | 正则抓 `mgsJwt` / `userId` / `orgId` / `departmentId` |
+| 课程访问 | `POST /api/course/{cid}/entry/record` | 可选，行为一致性 |
+
+请求头只需 `X-Requested-With: XMLHttpRequest`、`Content-Type: application/json`、`Origin/Referer`；**没有 CSRF token**。
+
+---
+
+## 3. 安装
+
+```powershell
+cd E:\大学\guetshuake
+python -m pip install -r requirements.txt       # playwright / requests / PyYAML / rich
+python -m playwright install chromium           # 已装过会秒过
+```
+
+## 4. 三步开刷
+
+```powershell
+# 1) 配置
+Copy-Item config.example.yaml   config.yaml
+Copy-Item accounts.example.yaml accounts.yaml   # 至少一个 enabled: true 的账号
+
+# 2) 登录一次（会弹浏览器，CAS 扫码/账号密码都行；登录态落在 profiles/<账号名>/）
+python run.py login --all
+
+# 3) 开刷（先 dry-run 看计划）
+python run.py run --all --dry-run
+python run.py run --all --speed normal
+```
+
+跑完会自动打印汇总表，并写 `data/result.json`（含每个活动的 status、百分比、请求数、耗时）。
+
+## 5. 多账号 / 并发
+
+`accounts.yaml`：
+
+```yaml
+defaults:
+  course_ids: [29066]
+  semester_id: "14"
+  academic_year_id: "5"
+accounts:
+  - name: acc01          # 会变成 profiles/acc01、data/state.acc01.json、data/logs/acc01.log
+    enabled: true
+  - name: acc02
+    enabled: true
+    speed: human         # 单账号覆盖节奏
+    engine: browser      # 单账号覆盖引擎
+```
+
+* 账号之间**并行**（`--account-jobs`，默认 `min(账号数, 4)`），互不影响；一个账号会话废了只把它标记失败。
+* **同一账号同一时刻只有一个请求在飞**（默认 `--per-account-jobs 1`）。原因：`session` cookie 每条响应都轮换，同账号并发写会互相顶号。
+  设 `--per-account-jobs 3` 时，工具不改并发写，而是把多个活动的分片**交错轮转**并摊薄段间隔——安全地快 2~3 倍。
+* 全局限速 `--global-rps`（默认 8）防止多账号把校园网关打爆；单账号 `--rps` 默认 3。
+* 课程结构（248 KB 的活动列表）只抓一次，N 个账号共享（`data/course-cache.json`，TTL 30 分钟）。
+* 浏览器上下文有上限（`max_browser_contexts`，默认 2），超出排队的账号先等名额，避免 10 个账号同时开 10 个 Chromium。
+
+## 6. 两种引擎
+
+| engine | 行为 | 适用 |
+|---|---|---|
+| `http`（默认） | 开头用一次无头 Chromium 验证会话 + 取最新 cookie，之后全部走 `requests` | 多账号、跑得快、占内存少 |
+| `browser` | 每个账号常驻一个后台 Chromium，所有请求走 `context.request`（cookie 与页面完全共享） | 想完全贴浏览器行为、被风控盯上时 |
+
+两种都是"后台调浏览器进程 + 直接打接口"，都不点页面。
+
+## 7. 节奏档与耗时
+
+| speed | 段长 | 段间隔 | 说明 |
+|---|---|---|---|
+| `probe` | 整段一次 `{"start":0,"end":duration}` | 0.3~0.8s | 最快；先跑 `probe` 试试服务端吃不吃 |
+| `normal`（默认） | 120s（`chunk_seconds` 可调） | 1.5~3s | 23 个视频 ≈ 125 次上报 |
+| `human` | 30s | 5~15s | 慢但最像人，被风控时用 |
+
+`config.yaml` 里只要写了 `gap_seconds`，就会**覆盖所有档位的段间隔**（不写则用上表默认值）。
+
+单账号 `normal` 大约 **5~10 分钟**（≈180 次请求）；`--per-account-jobs 3` 约 3 分钟。
+
+先探针再决定档位：
+
+```powershell
+python run.py probe --account acc01 --activity 92918
+```
+输出里的 `recommend` 就是建议值（`probe` / `normal` / `human` / `skip`）。
+
+## 8. 自动降档与断点
+
+* 某次上报返回 2xx 但 `completeness` 没涨 → 判定"服务端不认这个跨度" → 段长减半、重算剩余区间、重试；连续失败 7 次才把该活动标 `failed`，不影响其它活动。
+* 会话失效（401/跳 CAS/`session` 过期）→ 自动重建会话重试一次；再不行就停下这个账号并提示 `run.py login`。
+* 每个活动处理完立即写 `data/state.<账号>.json`；`Ctrl-C` 中断后重跑只补没做的部分。
+* 同一个 profile 有 `.lock` 保护，重复启动会明确报错而不是把会话搞乱。
+
+## 9. 命令参考
+
+```powershell
+python run.py login  [--all | --account acc01,acc02]
+python run.py status [--all | --account acc01]
+python run.py list   --course 29066
+python run.py probe  --account acc01 --activity 92918 [--course 29066]
+
+python run.py run    [--all | --account acc01] [--course 29066] [--only 92918,92906]
+                     [--speed probe|normal|human] [--chunk-seconds 120] [--target 100]
+                     [--engine http|browser] [--headed] [--dry-run]
+                     [--account-jobs 4] [--per-account-jobs 1]
+                     [--rps 3] [--global-rps 8] [--no-telemetry]
+```
+
+退出码：`0` 全部成功 · `1` 配置/接口错误 · `2` 会话全部失效（该重新 login）· `3` 部分账号或活动失败。
+
+## 10. 常见报错
+
+| 现象 | 原因 / 处理 |
+|---|---|
+| `找不到 accounts.yaml` | `Copy-Item accounts.example.yaml accounts.yaml` |
+| `profiles/xxx 还没有 profile` | 先 `python run.py login --account xxx` |
+| `会话不可用` / `会话已失效` | 重跑 login；若反复失效，检查是否在别处登录把 `session` 顶掉了 |
+| `profile 正在被进程 N 使用` | 关了占用该 profile 的浏览器/另一个本工具进程，或删 `profiles/<名字>/.lock` |
+| 全部上报都没让百分比上涨 | 用 `human` 档；仍不动就说明课程端有额外限制，此时 `probe` 的 `steps` 会显示每次的 before/after |
+| 403 / 419 频繁 | 降 `--rps`、改 `human`、减少 `--account-jobs` |
+| 找不到 Chromium | `python -m playwright install chromium` |
+
+## 11. 目录
+
+```
+run.py                 命令行入口（login / status / list / probe / run）
+config.example.yaml    全局配置模板
+accounts.example.yaml  多账号模板
+guet/
+  config.py            配置与账号清单
+  browser.py           Chromium 生命周期、并发槽、profile 锁
+  session.py           登录、cookie 导出、按引擎开传输层
+  transport.py         统一请求接口（requests / context.request）
+  client.py            TronClass 接口封装
+  planner.py           活动 -> 任务
+  progress.py          区间数学（合并/求补/切段）
+  telemetry.py         /statistics 埋点镜像
+  runner.py            单账号执行器（VideoJob / MaterialJob 状态机）
+  probe.py             服务端接受度探针
+  scheduler.py         多账号编排、课程缓存、错误隔离
+  report.py            终端表格 + result.json
+tools/
+  har_analyze.py       HAR 分析 / 样例抽取 / fixtures 导出
+  probe.py             独立探针
+tests/
+  test_offline.py      离线自测（16 项，不需要账号）
+  test_integration.py  全链路自测（3 项，假传输层）
+  fixtures/            从 HAR 导出的真实响应
+```
+
+## 12. 测试
+
+```powershell
+python -m unittest discover -s tests -v     # 19 项全绿，纯离线
+```
+
+覆盖：
+* `test_offline.py`（16 项）——区间数学、活动规划（对着真实 fixtures 校验 30/18/12 分布）、视频状态机（整段/分段/服务端限跨度时自动降档/服务端完全不理会时快速失败）、资料状态机、配置校验。
+* `test_integration.py`（3 项）——用假传输层把 `scheduler → runner → client` 全链路跑通：41 个待办活动全部刷到 100%、埋点被调用、`state.acc01.json` 正常落盘、dry-run 不发写请求、坏账号不影响好账号。
+
+重新分析抓包 / 导出 fixtures：
+
+```powershell
+python tools/har_analyze.py "content-autofill.googleapis.com_2026_11_04_12_46_14.har"
+python tools/har_analyze.py <har> --dump 855
+python tools/har_analyze.py <har> --export tests/fixtures
+```
+
+## 13. 边界
+
+* **作业与考试不自动完成**：需要真交内容/真答题，工具只把它们列进报告的"需人工"。
+* 所有 state / profile / 账号密码都在 `.gitignore` 里，不会进仓库。
+* 刷课属于自动化手段，成绩与考勤以老师端为准；被系统判定异常时以 `human` 档、降并发、错峰运行处理。

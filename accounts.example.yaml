@@ -1,0 +1,30 @@
+# ===== 账号清单（复制为 accounts.yaml 后填写）=====
+# 每个账号独立 profile、独立 state、独立日志；账号之间并行，互不影响。
+
+defaults:
+  course_ids: [29066]
+  semester_id: "14"        # 用 run.py list 时会打印你名下真实的 semester_id
+  academic_year_id: "5"
+  speed: normal            # 可被单账号覆盖
+  target_percent: 100
+  engine: http
+
+accounts:
+  - name: acc01            # 仅作标识，会用于 profiles/acc01、data/state.acc01.json
+    username: ""           # 学号；留空也完全可以（登录靠手动扫码）
+    password: ""           # 建议留空：登录一次后靠 profiles/ 里的会话续用
+    enabled: true
+    note: ""
+
+  - name: acc02
+    username: ""
+    password: ""
+    enabled: false
+    note: ""
+
+# 单账号覆盖示例：
+#  - name: acc03
+#    enabled: true
+#    course_ids: [29066, 29117]
+#    speed: human
+#    engine: browser

@@ -1,0 +1,164 @@
+{
+  "modules": [
+    {
+      "id": 20987,
+      "imported_from": null,
+      "is_hidden": 0,
+      "lesson_time_id": 0,
+      "name": "第一章生产与生产率管理",
+      "sort": 0,
+      "sticky_time": null,
+      "syllabuses": []
+    },
+    {
+      "id": 21201,
+      "imported_from": null,
+      "is_hidden": 0,
+      "lesson_time_id": 0,
+      "name": "第二章工业工程概述",
+      "sort": 1,
+      "sticky_time": null,
+      "syllabuses": []
+    },
+    {
+      "id": 21202,
+      "imported_from": null,
+      "is_hidden": 0,
+      "lesson_time_id": 0,
+      "name": "第三章工作研究",
+      "sort": 2,
+      "sticky_time": null,
+      "syllabuses": []
+    },
+    {
+      "id": 21203,
+      "imported_from": null,
+      "is_hidden": 0,
+      "lesson_time_id": 0,
+      "name": "第四章程序分析",
+      "sort": 3,
+      "sticky_time": null,
+      "syllabuses": []
+    },
+    {
+      "id": 21204,
+      "imported_from": null,
+      "is_hidden": 0,
+      "lesson_time_id": 0,
+      "name": "第五章管理事务分析",
+      "sort": 4,
+      "sticky_time": null,
+      "syllabuses": []
+    },
+    {
+      "id": 21205,
+      "imported_from": null,
+      "is_hidden": 0,
+      "lesson_time_id": 0,
+      "name": "第六章作业分析",
+      "sort": 5,
+      "sticky_time": null,
+      "syllabuses": []
+    },
+    {
+      "id": 21206,
+      "imported_from": null,
+      "is_hidden": 0,
+      "lesson_time_id": 0,
+      "name": "第七章动作分析",
+      "sort": 6,
+      "sticky_time": null,
+      "syllabuses": []
+    },
+    {
+      "id": 21207,
+      "imported_from": null,
+      "is_hidden": 0,
+      "lesson_time_id": 0,
+      "name": "第八章时间研究",
+      "sort": 7,
+      "sticky_time": null,
+      "syllabuses": []
+    },
+    {
+      "id": 21208,
+      "imported_from": null,
+      "is_hidden": 0,
+      "lesson_time_id": 0,
+      "name": "第九章工作抽样",
+      "sort": 8,
+      "sticky_time": null,
+      "syllabuses": []
+    },
+    {
+      "id": 21209,
+      "imported_from": null,
+      "is_hidden": 0,
+      "lesson_time_id": 0,
+      "name": "第十章预定动作时间标准法",
+      "sort": 9,
+      "sticky_time": null,
+      "syllabuses": []
+    },
+    {
+      "id": 21210,
+      "imported_from": null,
+      "is_hidden": 0,
+      "lesson_time_id": 0,
+      "name": "第十一章标准资料法",
+      "sort": 10,
+      "sticky_time": null,
+      "syllabuses": []
+    },
+    {
+      "id": 21211,
+      "imported_from": null,
+      "is_hidden": 0,
+      "lesson_time_id": 0,
+      "name": "第十二章标准作业",
+      "sort": 11,
+      "sticky_time": null,
+      "syllabuses": []
+    },
+    {
+      "id": 21212,
+      "imported_from": null,
+      "is_hidden": 0,
+      "lesson_time_id": 0,
+      "name": "第十三章学习曲线",
+      "sort": 12,
+      "sticky_time": null,
+      "syllabuses": []
+    },
+    {
+      "id": 21213,
+      "imported_from": null,
+      "is_hidden": 0,
+      "lesson_time_id": 0,
+      "name": "第十四章现场管理",
+      "sort": 13,
+      "sticky_time": null,
+      "syllabuses": []
+    },
+    {
+      "id": 23978,
+      "imported_from": null,
+      "is_hidden": 0,
+      "lesson_time_id": 0,
+      "name": "十五生产线平衡",
+      "sort": 14,
+      "sticky_time": null,
+      "syllabuses": []
+    },
+    {
+      "id": 23979,
+      "imported_from": null,
+      "is_hidden": 0,
+      "lesson_time_id": 0,
+      "name": "十六 精益生产",
+      "sort": 15,
+      "sticky_time": null,
+      "syllabuses": []
+    }
+  ]
+}

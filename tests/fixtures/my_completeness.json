@@ -1,0 +1,79 @@
+{
+  "completed_result": {
+    "completed": {
+      "exam_activity": [
+        13575,
+        13576,
+        13577,
+        13579,
+        13580,
+        13581
+      ],
+      "learning_activity": [
+        96950,
+        96951,
+        96953,
+        97063,
+        97062,
+        97061,
+        97066,
+        97129,
+        92906,
+        92907,
+        92908,
+        92909,
+        92910,
+        92913,
+        92915,
+        97064
+      ]
+    },
+    "total_activities": 74,
+    "total_completed": 22
+  },
+  "last_activity": {
+    "activity_end_time": null,
+    "activity_start_time": null,
+    "activity_type": "learning_activity",
+    "assign_group_ids": [],
+    "assign_student_ids": [],
+    "assign_targets": {},
+    "completion_criterion_key": "view",
+    "completion_criterion_value": 0,
+    "data": {
+      "selected_section": null
+    },
+    "end_time": null,
+    "group_set_id": null,
+    "id": 83055,
+    "is_assigned_to_all": true,
+    "is_in_progress": true,
+    "module_id": 20987,
+    "published": true,
+    "submit_by_group": false,
+    "syllabus_id": null,
+    "teaching_unit_id": 29066,
+    "title": "生产与生产率管理",
+    "type": "material",
+    "uploads": [
+      {
+        "id": 2764149,
+        "name": "第01章 生产与生产率管理.pptx"
+      },
+      {
+        "id": 2764492,
+        "name": "[1]--[1.1.1]--1.1.1企业生产运作管理概述.mp4"
+      },
+      {
+        "id": 2764489,
+        "name": "[2]--[1.1.2]--1.1.2企业生产运作管理面临的挑战.mp4"
+      },
+      {
+        "id": 2764487,
+        "name": "[3]--[1.2.1]--1.2生产率与生产率管理.mp4"
+      }
+    ]
+  },
+  "last_update_completeness_time": "2026-11-04",
+  "study_completeness": 33.0
+}

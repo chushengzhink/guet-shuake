@@ -1,0 +1,40 @@
+# ===== 全局配置（可复制为 config.yaml 后修改）=====
+# 所有字段均可省略，省略即用下面给出的默认值。
+
+base_url: https://courses.guet.edu.cn
+
+# 传输层：
+#   http    —— 用浏览器从 profile 里取一次 cookie，然后全部走 requests（省资源，多账号首选）
+#   browser —— 每个账号常驻一个后台 Chromium 上下文，所有请求走 context.request（最贴近真实浏览器）
+engine: http
+
+headless: true          # run 阶段是否无头；login 永远是带界面的
+auto_login: false       # 是否用 accounts.yaml 里的账号密码自动登录（默认 false，扫码/CAS 手动登录一次）
+login_timeout: 300      # 等待登录完成的秒数
+
+# 节奏档：probe（整段一次）/ normal（120s 一段）/ human（30s 一段 + 长间隔）
+speed: normal
+chunk_seconds: 120      # normal 档的段长
+gap_seconds: [1.5, 3.0] # 写了就覆盖所有档位的段间隔；想做极限测试可以写 [0, 0]
+target_percent: 100     # 视频达标百分比，默认刷满；课程只要求 80% 时可设 80
+
+telemetry: true         # 是否同步 /statistics 埋点（更像真人，可关）
+sub_course_id: 0        # 子课程时改这里
+
+# 并发与限速
+account_jobs: 4         # 同时跑几个账号
+per_account_jobs: 1     # 单账号内并发写；默认 1，session cookie 每响应轮换，调高有顶号风险
+rps: 3.0                # 单账号每秒请求数
+global_rps: 8.0         # 所有账号合计每秒请求数
+max_browser_contexts: 2 # 同时存在的浏览器上下文上限
+
+timeout: 30
+retries: 3
+proxy: ""               # 例如 http://127.0.0.1:7890；留空不走代理
+user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
+
+# 路径（相对仓库根目录）
+profile_dir: profiles
+state_dir: data
+log_dir: data/logs
+course_cache_ttl: 1800

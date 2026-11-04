@@ -1,0 +1,454 @@
+{
+  "activity_reads": [
+    {
+      "activity_id": 92918,
+      "activity_type": "learning_activity",
+      "completeness": "part",
+      "created_by_id": 119405,
+      "created_for_id": 119405,
+      "data": {
+        "completeness": 1,
+        "end": 4,
+        "ranges": [
+          [
+            0,
+            4
+          ]
+        ]
+      },
+      "id": "6aeab86aba1ba2cdbcb54a04",
+      "last_visited_at": "2026-11-04T04:45:37Z"
+    },
+    {
+      "activity_id": 83729,
+      "activity_type": "learning_activity",
+      "completeness": "part",
+      "created_by_id": 119405,
+      "created_for_id": 119405,
+      "data": {
+        "completeness": 25,
+        "upload_ids": [
+          2764490
+        ]
+      },
+      "id": "6aeab85cba1ba2cdbcb54a00",
+      "last_visited_at": "2026-11-04T04:45:16Z"
+    },
+    {
+      "activity_id": 83055,
+      "activity_type": "learning_activity",
+      "completeness": "part",
+      "created_by_id": 119405,
+      "created_for_id": 119405,
+      "data": {
+        "completeness": 75,
+        "upload_ids": [
+          2764492,
+          2764149,
+          2764487
+        ]
+      },
+      "id": "6ab2229020ab894a391640e6",
+      "last_visited_at": "2026-11-04T04:44:44Z"
+    },
+    {
+      "activity_id": 13583,
+      "activity_type": "exam_activity",
+      "completeness": "part",
+      "created_by_id": 119405,
+      "created_for_id": 119405,
+      "data": {
+        "actions": [
+          "submit"
+        ],
+        "referrer_exam_id": 13583
+      },
+      "id": "6ae72e92ba1ba2cdbcb45715",
+      "last_visited_at": "2026-11-01T12:20:34Z"
+    },
+    {
+      "activity_id": 13582,
+      "activity_type": "exam_activity",
+      "completeness": "part",
+      "created_by_id": 119405,
+      "created_for_id": 119405,
+      "data": {
+        "actions": [
+          "submit"
+        ],
+        "referrer_exam_id": 13582
+      },
+      "id": "6adddb8920ab894a391df10b",
+      "last_visited_at": "2026-10-25T10:35:53Z"
+    },
+    {
+      "activity_id": 97064,
+      "activity_type": "learning_activity",
+      "completeness": "full",
+      "created_by_id": 119405,
+      "created_for_id": 119405,
+      "data": {
+        "actions": [
+          "submit"
+        ]
+      },
+      "id": "6ac7517720ab894a3918bd5f",
+      "last_visited_at": "2026-10-21T13:51:30Z"
+    },
+    {
+      "activity_id": 13581,
+      "activity_type": "exam_activity",
+      "completeness": "full",
+      "created_by_id": 119405,
+      "created_for_id": 119405,
+      "data": {
+        "actions": [
+          "submit"
+        ],
+        "referrer_exam_id": 13581
+      },
+      "id": "6ad4b86620ab894a391ba9c5",
+      "last_visited_at": "2026-10-18T12:15:34Z"
+    },
+    {
+      "activity_id": 13580,
+      "activity_type": "exam_activity",
+      "completeness": "full",
+      "created_by_id": 119405,
+      "created_for_id": 119405,
+      "data": {
+        "actions": [
+          "submit"
+        ],
+        "referrer_exam_id": 13580
+      },
+      "id": "6aca029c20ab894a3919623e",
+      "last_visited_at": "2026-10-10T09:17:16Z"
+    },
+    {
+      "activity_id": 13579,
+      "activity_type": "exam_activity",
+      "completeness": "full",
+      "created_by_id": 119405,
+      "created_for_id": 119405,
+      "data": {
+        "actions": [
+          "submit"
+        ],
+        "referrer_exam_id": 13579
+      },
+      "id": "6aca029920ab894a39196238",
+      "last_visited_at": "2026-10-10T09:17:14Z"
+    },
+    {
+      "activity_id": 92913,
+      "activity_type": "learning_activity",
+      "completeness": "full",
+      "created_by_id": 119405,
+      "created_for_id": 119405,
+      "data": {
+        "completeness": 100,
+        "end": 743,
+        "ranges": [
+          [
+            0,
+            743
+          ]
+        ]
+      },
+      "id": "6ac74acd20ab894a3918bbae",
+      "last_visited_at": "2026-10-08T08:21:45Z"
+    },
+    {
+      "activity_id": 92909,
+      "activity_type": "learning_activity",
+      "completeness": "full",
+      "created_by_id": 119405,
+      "created_for_id": 119405,
+      "data": {
+        "completeness": 100,
+        "end": 684,
+        "ranges": [
+          [
+            0,
+            684
+          ]
+        ]
+      },
+      "id": "6ac74aba20ab894a3918bba4",
+      "last_visited_at": "2026-10-08T08:20:21Z"
+    },
+    {
+      "activity_id": 92910,
+      "activity_type": "learning_activity",
+      "completeness": "full",
+      "created_by_id": 119405,
+      "created_for_id": 119405,
+      "data": {
+        "completeness": 100,
+        "end": 518,
+        "ranges": [
+          [
+            0,
+            518
+          ]
+        ]
+      },
+      "id": "6ac74ac820ab894a3918bbac",
+      "last_visited_at": "2026-10-08T08:17:58Z"
+    },
+    {
+      "activity_id": 92915,
+      "activity_type": "learning_activity",
+      "completeness": "full",
+      "created_by_id": 119405,
+      "created_for_id": 119405,
+      "data": {
+        "completeness": 100,
+        "end": 369,
+        "ranges": [
+          [
+            0,
+            369
+          ]
+        ]
+      },
+      "id": "6ac74ca220ab894a3918bc31",
+      "last_visited_at": "2026-10-08T08:15:55Z"
+    },
+    {
+      "activity_id": 92917,
+      "activity_type": "learning_activity",
+      "completeness": "part",
+      "created_by_id": 119405,
+      "created_for_id": 119405,
+      "data": {},
+      "id": "6ac74fdf20ab894a3918bcfe",
+      "last_visited_at": "2026-10-08T08:10:07Z"
+    },
+    {
+      "activity_id": 92916,
+      "activity_type": "learning_activity",
+      "completeness": "part",
+      "created_by_id": 119405,
+      "created_for_id": 119405,
+      "data": {},
+      "id": "6ac74fd920ab894a3918bcfc",
+      "last_visited_at": "2026-10-08T08:10:01Z"
+    },
+    {
+      "activity_id": 92908,
+      "activity_type": "learning_activity",
+      "completeness": "full",
+      "created_by_id": 119405,
+      "created_for_id": 119405,
+      "data": {
+        "completeness": 100,
+        "end": 797,
+        "ranges": [
+          [
+            0,
+            797
+          ]
+        ]
+      },
+      "id": "6ac74a9220ab894a3918bb93",
+      "last_visited_at": "2026-10-08T08:08:01Z"
+    },
+    {
+      "activity_id": 92906,
+      "activity_type": "learning_activity",
+      "completeness": "full",
+      "created_by_id": 119405,
+      "created_for_id": 119405,
+      "data": {
+        "completeness": 100,
+        "end": 796,
+        "ranges": [
+          [
+            0,
+            796
+          ]
+        ]
+      },
+      "id": "6ac74a5a20ab894a3918bb80",
+      "last_visited_at": "2026-10-08T08:06:23Z"
+    },
+    {
+      "activity_id": 92907,
+      "activity_type": "learning_activity",
+      "completeness": "full",
+      "created_by_id": 119405,
+      "created_for_id": 119405,
+      "data": {
+        "completeness": 100,
+        "end": 458,
+        "ranges": [
+          [
+            0,
+            458
+          ]
+        ]
+      },
+      "id": "6ac74a7e20ab894a3918bb8a",
+      "last_visited_at": "2026-10-08T08:02:01Z"
+    },
+    {
+      "activity_id": 97062,
+      "activity_type": "learning_activity",
+      "completeness": "full",
+      "created_by_id": 119405,
+      "created_for_id": 119405,
+      "data": {
+        "actions": [
+          "submit"
+        ]
+      },
+      "id": "6abd290020ab894a39181a23",
+      "last_visited_at": "2026-10-08T00:52:36Z"
+    },
+    {
+      "activity_id": 97129,
+      "activity_type": "learning_activity",
+      "completeness": "full",
+      "created_by_id": 119405,
+      "created_for_id": 119405,
+      "data": {
+        "actions": [
+          "submit"
+        ]
+      },
+      "id": "6abd293d20ab894a39181a37",
+      "last_visited_at": "2026-09-30T15:22:37Z"
+    },
+    {
+      "activity_id": 97066,
+      "activity_type": "learning_activity",
+      "completeness": "full",
+      "created_by_id": 119405,
+      "created_for_id": 119405,
+      "data": {
+        "actions": [
+          "submit"
+        ]
+      },
+      "id": "6abd293620ab894a39181a33",
+      "last_visited_at": "2026-09-30T15:22:30Z"
+    },
+    {
+      "activity_id": 97061,
+      "activity_type": "learning_activity",
+      "completeness": "full",
+      "created_by_id": 119405,
+      "created_for_id": 119405,
+      "data": {
+        "actions": [
+          "submit"
+        ]
+      },
+      "id": "6abd292220ab894a39181a29",
+      "last_visited_at": "2026-09-30T15:22:10Z"
+    },
+    {
+      "activity_id": 97063,
+      "activity_type": "learning_activity",
+      "completeness": "full",
+      "created_by_id": 119405,
+      "created_for_id": 119405,
+      "data": {
+        "actions": [
+          "submit"
+        ]
+      },
+      "id": "6abd28eb20ab894a39181a1f",
+      "last_visited_at": "2026-09-30T15:21:15Z"
+    },
+    {
+      "activity_id": 96953,
+      "activity_type": "learning_activity",
+      "completeness": "full",
+      "created_by_id": 119405,
+      "created_for_id": 119405,
+      "data": {
+        "actions": [
+          "submit"
+        ]
+      },
+      "id": "6abd289520ab894a39181a12",
+      "last_visited_at": "2026-09-30T15:20:44Z"
+    },
+    {
+      "activity_id": 13577,
+      "activity_type": "exam_activity",
+      "completeness": "full",
+      "created_by_id": 119405,
+      "created_for_id": 119405,
+      "data": {
+        "actions": [
+          "submit"
+        ],
+        "referrer_exam_id": 13577
+      },
+      "id": "6ab892f720ab894a391702b6",
+      "last_visited_at": "2026-09-27T03:52:24Z"
+    },
+    {
+      "activity_id": 96951,
+      "activity_type": "learning_activity",
+      "completeness": "full",
+      "created_by_id": 119405,
+      "created_for_id": 119405,
+      "data": {
+        "actions": [
+          "submit"
+        ]
+      },
+      "id": "6ab3bb5420ab894a3916975d",
+      "last_visited_at": "2026-09-23T15:21:23Z"
+    },
+    {
+      "activity_id": 96950,
+      "activity_type": "learning_activity",
+      "completeness": "full",
+      "created_by_id": 119405,
+      "created_for_id": 119405,
+      "data": {
+        "actions": [
+          "submit"
+        ]
+      },
+      "id": "6ab33bb520ab894a3916707b",
+      "last_visited_at": "2026-09-23T15:21:01Z"
+    },
+    {
+      "activity_id": 13576,
+      "activity_type": "exam_activity",
+      "completeness": "full",
+      "created_by_id": 119405,
+      "created_for_id": 119405,
+      "data": {
+        "actions": [
+          "submit"
+        ],
+        "referrer_exam_id": 13576
+      },
+      "id": "6aaf574120ab894a3915b04a",
+      "last_visited_at": "2026-09-20T03:47:13Z"
+    },
+    {
+      "activity_id": 13575,
+      "activity_type": "exam_activity",
+      "completeness": "full",
+      "created_by_id": 119405,
+      "created_for_id": 119405,
+      "data": {
+        "actions": [
+          "submit"
+        ],
+        "referrer_exam_id": 13575
+      },
+      "id": "6aaf563520ab894a3915affa",
+      "last_visited_at": "2026-09-20T03:42:45Z"
+    }
+  ]
+}

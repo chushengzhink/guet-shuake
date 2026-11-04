@@ -1,0 +1,93 @@
+{
+  "announce_answer_and_explanation": false,
+  "completion_criterion": "需累积观看 80%(含)以上",
+  "completion_criterion_key": "completeness",
+  "completion_criterion_value": "80",
+  "course_id": 29066,
+  "data": {
+    "ai_generate_contents": false,
+    "allow_download": true,
+    "allow_forward_seeking": false,
+    "description": "",
+    "pause_when_leaving_window": false,
+    "publish_count": 1,
+    "publish_time": "2026-09-13T12:20:00Z",
+    "teaching_method": 0,
+    "week": 0
+  },
+  "enable_edit": true,
+  "end_time": null,
+  "id": 92918,
+  "imported_from": null,
+  "is_in_progress": true,
+  "is_transfer_arrears": false,
+  "module_id": 21203,
+  "prerequisites": [],
+  "publish_mode": null,
+  "published": true,
+  "score_item_group_id": 0,
+  "score_item_group_name": "",
+  "score_item_scored": false,
+  "score_percentage": "0.0",
+  "score_type": "percentage",
+  "sort": 3,
+  "start_time": null,
+  "submit_times": 1,
+  "syllabus_id": 0,
+  "teaching_model": "online",
+  "title": "概念",
+  "type": "online_video",
+  "uploads": [
+    {
+      "allow_download": true,
+      "audio": null,
+      "caption_permission": {
+        "create": false,
+        "upload": false
+      },
+      "caption_speech_permission": {
+        "create": false
+      },
+      "caption_translate_permission": "read",
+      "chapter_permission": {
+        "management": false,
+        "view": true
+      },
+      "deleted": false,
+      "id": 2764500,
+      "key": "ed9802b609640d19dfda55cfbd549e712078c50d",
+      "link": null,
+      "name": "[14]--[4.1.1]--4.1.1-4程序分析的概念、常用.mp4",
+      "origin_allow_download": true,
+      "owner_id": 0,
+      "reference_id": 1813228,
+      "size": 22044386,
+      "source": "",
+      "status": "ready",
+      "third_part_referrer_id": 0,
+      "topic_permission": {
+        "manage": [],
+        "view": [
+          "published"
+        ]
+      },
+      "type": "video",
+      "video_src_type": "video/mp4",
+      "videos": [
+        {
+          "duration": 542.163,
+          "id": 93442,
+          "resolution": "QVGA"
+        },
+        {
+          "duration": 542.163,
+          "id": 93443,
+          "resolution": "VGA"
+        }
+      ]
+    }
+  ],
+  "using_phase": "unspecified",
+  "visible_end_at": null,
+  "visible_start_at": null
+}
