@@ -56,11 +56,29 @@ jobs:
       - name: 安装 Inno Setup
         run: choco install innosetup --no-progress -y
 
-      - name: 构建 full + lite
+      - name: 构建 full + lite（有证书则正式签名）
         shell: powershell
+        env:
+          PFX_B64: ${{ secrets.CODESIGN_PFX_BASE64 }}
+          PFX_PWD: ${{ secrets.CODESIGN_PFX_PASSWORD }}
         run: |
-          powershell -ExecutionPolicy Bypass -File packaging\build.ps1 `
-            -Variant both -Version ${{ steps.ver.outputs.value }}
+          $extra = @{
+            Variant  = 'both'
+            Version  = '${{ steps.ver.outputs.value }}'
+            Sign     = $true
+            SignMode = 'selfsigned'
+          }
+          if ($env:PFX_B64) {
+            [IO.File]::WriteAllBytes("codesign.pfx", [Convert]::FromBase64String($env:PFX_B64))
+            $extra.SignMode = 'pfx'
+            $extra.PfxPath = "codesign.pfx"
+            $extra.PfxPassword = $env:PFX_PWD
+            Write-Host "使用仓库 secrets 里的正式证书签名"
+          } else {
+            Write-Host "没有配置 CODESIGN_PFX_BASE64，使用自签名（用户首次运行会有未知发布者提示）"
+          }
+          & packaging\build.ps1 @extra
+          if (Test-Path codesign.pfx) { Remove-Item codesign.pfx -Force }
 
       - name: 收集产物
         shell: pwsh

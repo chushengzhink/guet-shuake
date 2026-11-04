@@ -91,6 +91,30 @@ python start.py                           # 终端版向导
 
 参数、接口清单、算法细节见 **[docs/TECH.md](docs/TECH.md)**。
 
+## 代码签名
+
+构建产物已做代码签名（SHA256 + 时间戳），但仓库里用的是**自签名证书**——它能保证"文件没被篡改"，但**不等于受信任**：别人第一次运行时仍会看到「Windows 已保护你的电脑 · 未知发布者」。
+
+三个选择：
+
+1. **直接运行**：点「更多信息 → 仍要运行」。
+2. **信任作者**：把仓库里的公钥证书导入「受信任的根证书颁发机构」，之后本机不再提示
+   ```powershell
+   Import-Certificate -FilePath packaging\certs\guet-shuake-dev.cer -CertStoreLocation Cert:\CurrentUser\Root
+   ```
+   想撤销：`Get-ChildItem Cert:\CurrentUser\Root | Where-Object { $_.Subject -like '*GUET Shuake*' } | Remove-Item`
+3. **彻底无提示**：必须买代码签名证书（OV/EV），然后用它签
+   ```powershell
+   powershell -File packaging\sign.ps1 -Mode pfx -PfxPath my.pfx -PfxPassword ****** -Targets "packaging\output\*.exe"
+   ```
+   开源项目还可以申请 [SignPath.io](https://signpath.io/) 的 OSS 免费签名。
+
+构建时自动签名：`build.ps1 -Sign`（默认自签名），正式证书则 `-Sign -SignMode pfx -PfxPath my.pfx -PfxPassword ******`。产物旁边会生成 `SHA256SUMS.txt`，下载后可核对：
+
+```powershell
+Get-FileHash .\GuetShuake-1.0.0-full-setup.exe -Algorithm SHA256
+```
+
 ## 自己构建
 
 ```powershell

@@ -32,3 +32,8 @@ build/
 packaging/output/
 packaging/browsers/
 *.log
+
+# 签名私钥（绝不入库）
+# 私钥不入库；公钥证书 .cer 保留，用户可导入以信任自签名
+packaging/certs/*.pfx
+*.pfx

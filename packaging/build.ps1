@@ -15,7 +15,12 @@
 param(
     [ValidateSet('full', 'lite', 'both')]
     [string]$Variant = 'both',
-    [string]$Version = '1.0.0'
+    [string]$Version = '1.0.0',
+    [switch]$Sign,
+    [ValidateSet('selfsigned', 'pfx')]
+    [string]$SignMode = 'selfsigned',
+    [string]$PfxPath,
+    [string]$PfxPassword
 )
 
 $ErrorActionPreference = 'Stop'
@@ -73,18 +78,47 @@ try {
         $size = (Get-ChildItem "dist\$v\GuetShuake" -Recurse | Measure-Object Length -Sum).Sum / 1MB
         Write-Host ("  产物：{0}（{1:N0} MB）" -f $exe, $size) -ForegroundColor Green
 
+        if ($Sign) {
+            # 先签 exe，再打安装包 —— 这样装进去的就是已签名的可执行文件
+            $signArgs = @{ Mode = $SignMode; Targets = $exe }
+            if ($PfxPath) { $signArgs['PfxPath'] = $PfxPath }
+            if ($PfxPassword) { $signArgs['PfxPassword'] = $PfxPassword }
+            & powershell -ExecutionPolicy Bypass -File (Join-Path $packaging 'sign.ps1') @signArgs
+            if ($LASTEXITCODE -ne 0) { Write-Warning 'exe 签名失败（继续打包）' }
+        }
+
         if ($iscc) {
             & $iscc "/DVariant=$v" "/DAppVersion=$Version" (Join-Path $packaging 'installer.iss')
             if ($LASTEXITCODE -ne 0) { throw "Inno Setup 编译失败（$v）" }
+
+            if ($Sign) {
+                $setupArgs = @{
+                    Mode = $SignMode
+                    Targets = (Join-Path $packaging "output\GuetShuake-$Version-$v-setup.exe")
+                }
+                if ($PfxPath) { $setupArgs['PfxPath'] = $PfxPath }
+                if ($PfxPassword) { $setupArgs['PfxPassword'] = $PfxPassword }
+                & powershell -ExecutionPolicy Bypass -File (Join-Path $packaging 'sign.ps1') @setupArgs
+                if ($LASTEXITCODE -ne 0) { Write-Warning '安装包签名失败' }
+            }
         } else {
             Write-Warning "没找到 ISCC.exe，跳过安装包；可用 dist\$v\GuetShuake 目录直接分发"
         }
     }
 
     Write-Host "`n完成，安装包在 packaging\output：" -ForegroundColor Cyan
-    Get-ChildItem (Join-Path $packaging 'output') -Filter *.exe -ErrorAction SilentlyContinue |
-        Select-Object Name, @{n = 'MB'; e = { [math]::Round($_.Length / 1MB, 1) } } |
-        Format-Table -AutoSize
+    $outputs = Get-ChildItem (Join-Path $packaging 'output') -Filter *.exe -ErrorAction SilentlyContinue
+    $outputs | Select-Object Name, @{n = 'MB'; e = { [math]::Round($_.Length / 1MB, 1) } } | Format-Table -AutoSize
+
+    if ($outputs) {
+        # 生成校验和，用户下载后可自行核对（签名之外的第二道确认）
+        $lines = foreach ($f in $outputs) {
+            $hash = (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower()
+            "$hash  $($f.Name)"
+        }
+        $lines | Set-Content (Join-Path $packaging 'output\SHA256SUMS.txt') -Encoding ascii
+        Write-Host "校验和：packaging\output\SHA256SUMS.txt" -ForegroundColor DarkGray
+    }
 }
 finally {
     Pop-Location
