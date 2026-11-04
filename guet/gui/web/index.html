@@ -171,6 +171,7 @@
         <button class="btn primary" id="startBtn" onclick="start()">开始刷课</button>
         <button class="btn danger" id="stopBtn" onclick="stop()" disabled>停止</button>
         <span class="status-pill" id="runState">空闲</span>
+        <span class="hint" id="runHint" style="margin:0"></span>
       </div>
       <div class="progress" id="progress" style="margin-top:14px"></div>
     </div>
@@ -200,7 +201,8 @@ function toast(msg){
   clearTimeout(el._t); el._t = setTimeout(()=>el.classList.remove('show'), 2600);
 }
 async function api(path, body){
-  const res = await fetch(path + '?t=' + encodeURIComponent(TOKEN), {
+  const sep = path.includes('?') ? '&' : '?';
+  const res = await fetch(path + sep + 't=' + encodeURIComponent(TOKEN), {
     method: body === undefined ? 'GET' : 'POST',
     headers: {'Content-Type':'application/json'},
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -267,6 +269,10 @@ function renderRunState(){
   const map = {idle:'空闲', running:'运行中', stopping:'停止中', 'logging-in':'登录中'};
   const el = $('runState');
   el.textContent = map[state.status] || state.status;
+  const hint = state.status === 'running'
+    ? (state.speed === 'tick' ? '运行中 · 每 120 秒一轮，日志会陆续出现' : '运行中 · 正在逐个活动处理')
+    : '';
+  document.getElementById('runHint').textContent = hint;
   el.className = 'status-pill ' + (state.status === 'running' ? 'running' : state.status === 'stopping' ? 'stopping' : '');
   const busy = state.status === 'running' || state.status === 'stopping';
   $('startBtn').disabled = busy;
@@ -276,6 +282,7 @@ async function refresh(){
   try{
     const data = await api('/api/status');
     state.accounts = data.accounts || [];
+    state.browser = data.browser || '';
     state.status = data.status;
     state.progress = data.progress || {};
     if (data.error) $('courseHint').textContent = data.error;
@@ -327,7 +334,18 @@ function toggleCourse(id){
   if (state.selected.has(id)) state.selected.delete(id); else state.selected.add(id);
   renderCourses();
 }
-function pickSpeed(id){ state.speed = id; renderSpeeds(); }
+function pickSpeed(id){
+  state.speed = id;
+  renderSpeeds();
+  const tips = {
+    probe: '125 秒顶格上报，一门 5 小时的课约 4 分钟。',
+    normal: '120 秒一段，约 10 分钟。',
+    human: '30 秒一段，约 30 分钟，请求密度最低。',
+    realtime: '按真实时间推进，需要多路并行；可点「实测推荐」算路数。',
+    tick: '每 120 秒推进一轮，会一直跑到全部完成 —— 不是卡住。',
+  };
+  document.getElementById('planHint').textContent = tips[id] || '';
+}
 
 async function bench(){
   const acc = state.accounts.find(a => a.logged_in) || state.accounts[0];
