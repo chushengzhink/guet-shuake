@@ -159,3 +159,25 @@ python -m unittest discover -s tests -q      # 83 项，全部离线
 ## License
 
 [MIT](LICENSE)
+
+## 发布到 GitHub
+
+本仓库：<https://github.com/chushengzhink/guet-shuake>
+
+发新版本的流程：
+
+```powershell
+git add -A; git commit -m "feat: ..."; git push
+
+# 本地构建（自动签名 + 生成 SHA256SUMS.txt）
+powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -Variant both -Sign
+
+# 打 tag 并把安装包挂上 Release
+gh release create v1.0.1 packaging\output\GuetShuake-1.0.1-*.exe packaging\output\SHA256SUMS.txt `
+  --title "v1.0.1" --notes "更新说明"
+```
+
+> tag **不会**自动触发 CI：这样本地验证过的签名包不会被 CI 产物覆盖。
+> 想用 CI 出包，到 Actions → `build-release` → Run workflow（勾选 publish）。
+
+仓库里的 `packaging/certs/guet-shuake-dev.cer` 是自签名公钥，用户可以导入以信任本工具（见上一节）。
