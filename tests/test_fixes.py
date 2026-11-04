@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -17,13 +18,15 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import requests  # noqa: E402
 import run as cli  # noqa: E402
 from guet.client import SessionExpired, TronClassError  # noqa: E402
-from guet.config import load_config  # noqa: E402
+from guet.config import RuntimeConfig, load_config  # noqa: E402
 from guet.realtime import LaneJob  # noqa: E402
 from guet.runner import MaterialJob, VideoJob  # noqa: E402
 from guet.scheduler import CourseCache  # noqa: E402
 from guet.ticker import effective_threads  # noqa: E402
+from guet.transport import HttpTransport  # noqa: E402
 from guet.util import LockBusy, atomic_write_json, run_lock, shutdown_loggers  # noqa: E402
 from tests.test_realtime import FakeClock, FakeRunner, PerActivityServer, Task  # noqa: E402
 
@@ -94,25 +97,46 @@ class RetryKeepsItemTest(unittest.TestCase):
 
 
 class RealtimeCompletionTest(unittest.TestCase):
-    def test_full_state_without_ranges_is_done(self):
-        """state=full 但 data 里没有 completeness/ranges 时不能判失败。"""
-        class FullServer:
+    def test_full_on_refresh_without_data_is_done(self):
+        """初始未完成 → 时间线走完 → 复查才返回 full（且不带 data），必须判 done 而不是 failed。
+
+        这是审查指出的原缺陷：旧代码在 `_replan()` 返回 False（没有缺口）时直接进失败分支，
+        即使复查已经把 percent 抬到 100。
+        """
+
+        class LateFullServer:
+            def __init__(self) -> None:
+                self.full = False
+                self.calls: list[tuple[int, int]] = []
+
             def activity_read(self, aid, cid=None):
-                return {"completeness": "full", "data": {}}
+                if self.full:
+                    return {"completeness": "full", "data": {}}
+                return {"completeness": "", "data": {"completeness": 0, "ranges": []}}
 
             def report_video(self, aid, start, end, cid=None):
-                return {"completeness": "full", "data": {}}
+                self.calls.append((start, end))
+                self.full = True          # 上报后服务端记成 full，但回包里只有 part 且没有 data
+                return {"completeness": "part", "data": {}}
 
-        runner = FakeRunner(FullServer())
+        server = LateFullServer()
+        runner = FakeRunner(server)
         clock = FakeClock()
         job = LaneJob(runner, Task(1, 300), 100, 100, clock=clock.now)
         job.prepare()
-        clock.sleep(100)
-        # 直接走到时间线末尾：先把 cursor 推到头
-        job.cursor = job.total
-        self.assertEqual(job.step(), "done")
+        self.assertFalse(job.done)        # 前置条件：确实是从「未完成」开始
+
+        outcomes = []
+        for _ in range(10):
+            outcome = job.step()
+            outcomes.append(outcome)
+            if outcome in ("done", "failed"):
+                break
+        self.assertEqual(outcomes[-1], "done")
         self.assertTrue(job.done)
         self.assertFalse(job.failed)
+        self.assertEqual(job.percent, 100)
+        self.assertEqual(server.calls, [(0, 100), (100, 200), (200, 300)])
 
 
 class TickThreadsTest(unittest.TestCase):
@@ -160,6 +184,58 @@ class ConcurrencyTest(unittest.TestCase):
             with run_lock(path):          # 释放后可以再次获取
                 pass
 
+    def test_lock_release_does_not_close_other_files(self):
+        """锁退出时不能关第二次 fd —— 否则会误关复用了该编号的其它文件。"""
+        with tempfile.TemporaryDirectory() as raw:
+            lock = Path(raw) / "acc.lock"
+            other = Path(raw) / "other.txt"
+            with run_lock(lock):
+                pass
+            with open(other, "w", encoding="utf-8") as handle:
+                handle.write("ok")
+            with open(other, "a", encoding="utf-8") as handle:
+                handle.write("!")         # 旧实现会在这里抛 OSError 9
+            self.assertEqual(other.read_text(encoding="utf-8"), "ok!")
+
+    def test_lock_not_broken_by_old_mtime(self):
+        """老锁文件（mtime 10 小时前）只要原进程仍持锁，就必须继续拒绝。"""
+        with tempfile.TemporaryDirectory() as raw:
+            lock = Path(raw) / "acc.lock"
+            with run_lock(lock):
+                old = time.time() - 10 * 3600
+                os.utime(lock, (old, old))
+                with self.assertRaises(LockBusy):
+                    with run_lock(lock):
+                        pass
+
+    def test_lock_blocks_other_process(self):
+        with tempfile.TemporaryDirectory() as raw:
+            lock = Path(raw) / "acc.lock"
+            code = (
+                "import sys, time\n"
+                f"sys.path.insert(0, {str(ROOT)!r})\n"
+                "from pathlib import Path\n"
+                "from guet.util import run_lock\n"
+                f"cm = run_lock(Path({str(lock)!r}))\n"
+                "cm.__enter__()\n"
+                "print('locked', flush=True)\n"
+                "time.sleep(5)\n"
+            )
+            holder = subprocess.Popen(
+                [sys.executable, "-c", code],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+            )
+            try:
+                self.assertEqual(holder.stdout.readline().strip(), "locked")
+                with self.assertRaises(LockBusy):
+                    with run_lock(lock):
+                        pass
+            finally:
+                holder.kill()
+                holder.wait(timeout=10)
+                if holder.stdout is not None:
+                    holder.stdout.close()
+
     def test_course_cache_courses_load_in_parallel(self):
         class SlowClient:
             def course_meta(self, cid):
@@ -184,6 +260,40 @@ class ConcurrencyTest(unittest.TestCase):
             elapsed = time.perf_counter() - started
             self.assertLess(elapsed, 0.45)     # 串行需要 0.6s 以上
             self.assertEqual(len(cache.bundle(1, client)["activities"]), 1)
+
+
+class ProxyTest(unittest.TestCase):
+    def capture(self, rt: RuntimeConfig) -> dict:
+        transport = HttpTransport(rt, {})
+        captured: dict = {}
+
+        def fake_request(self, method, url, **kwargs):
+            captured.update(kwargs)
+            return mock.Mock(status_code=200, url=url, text="{}", headers={})
+
+        with mock.patch.object(requests.Session, "request", fake_request):
+            transport.request("GET", "/api/x")
+        return captured
+
+    def test_config_proxy_beats_env(self):
+        env = {"HTTP_PROXY": "http://env-b:8080", "HTTPS_PROXY": "http://env-b:8080"}
+        with mock.patch.dict(os.environ, env):
+            captured = self.capture(RuntimeConfig(proxy="http://cfg-a:1080"))
+            self.assertEqual(captured["proxies"],
+                             {"http": "http://cfg-a:1080", "https": "http://cfg-a:1080"})
+            merged = requests.Session().merge_environment_settings(
+                "https://courses.guet.edu.cn/api/x", captured["proxies"] or {}, True, True, None
+            )["proxies"]
+            self.assertEqual(merged["https"], "http://cfg-a:1080")
+
+    def test_env_proxy_still_used_when_unset(self):
+        with mock.patch.dict(os.environ, {"HTTPS_PROXY": "http://env-b:8080"}):
+            captured = self.capture(RuntimeConfig(proxy=""))
+            self.assertIsNone(captured["proxies"])
+            merged = requests.Session().merge_environment_settings(
+                "https://courses.guet.edu.cn/api/x", captured["proxies"] or {}, True, True, None
+            )["proxies"]
+            self.assertEqual(merged["https"], "http://env-b:8080")
 
 
 class CliValidationTest(unittest.TestCase):

@@ -23,7 +23,6 @@ log = setup_logger("browser")
 
 _sem_lock = threading.Lock()
 _sem = threading.BoundedSemaphore(2)
-LOCK_TTL_SECONDS = 6 * 3600
 
 
 class BrowserUnavailable(RuntimeError):

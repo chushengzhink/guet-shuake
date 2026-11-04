@@ -229,9 +229,9 @@ python run.py run --all --speed realtime --lanes all       # 有多少视频开�
 
 ### 运行约束与已知行为
 
-* **同一账号同时只允许一个进程**：`data/state.<账号>.run.lock` 是 pid 锁，第二个进程会直接报「已在另一个进程里运行」并退出码 1，不会把会话和 state 写乱。
+* **同一账号同时只允许一个进程**：`data/state.<账号>.run.lock` 用操作系统的文件锁（Windows `msvcrt` / POSIX `flock`），**不看文件年龄、没有 TTL**——进程活多久锁就一直有效，进程崩溃则由系统自动释放；第二个进程直接报「已在另一个进程里运行」并以退出码 1 退出。锁文件会常驻（内容形如 `#66484`，`#` 后面是 pid），仅供排查，靠锁不靠存在性。
 * **浏览器引擎不支持跨线程**：Playwright 的 sync API 绑定创建线程，`--engine browser` 下 `--lane-threads` 会被强制回 1 并打警告（`http` 引擎不受影响）。
-* **两个引擎走同一出口**：`config.yaml` 里配了 `proxy` 就同时作用于 requests（显式 `session.proxies`，优先级高于 `HTTP(S)_PROXY` 环境变量）和 Chromium。
+* **两个引擎走同一出口**：`config.yaml` 配了 `proxy` 就以请求级 `proxies` 下发（requests 会先把 `HTTP(S)_PROXY` 环境变量 `setdefault` 进请求参数，只有请求级显式值才能盖住它）；没配则照旧沿用环境变量。
 * **浏览器响应及时释放**：`context.request` 拿到的 `APIResponse` 读完字段立刻 `dispose()`，长时间 tick/realtime 不会累积。
 * **命令行覆盖后会重新校验**：`--target 101`、`--lanes -1` 这类会在进入执行前被拒（退出码 1）。
 * **计划任务带全路径**：生成的 `tick-<账号>.bat` 会带上实际的 `--config` / `--accounts` 绝对路径，不会悄悄回落到默认文件。

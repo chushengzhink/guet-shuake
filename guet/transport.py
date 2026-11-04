@@ -158,9 +158,11 @@ class HttpTransport(Transport):
                  limiter: TokenBucket | None = None):
         super().__init__(rt, limiter)
         self.session = requests.Session()
-        if rt.proxy:
-            # 显式设置会覆盖 HTTP(S)_PROXY 环境变量，保证两个引擎走同一个出口
-            self.session.proxies.update({"http": rt.proxy, "https": rt.proxy})
+        # 必须走「请求级 proxies」：requests 会先把 HTTP(S)_PROXY 环境变量
+        # setdefault 进请求参数，只有请求级显式给了才会覆盖掉环境变量。
+        self._proxies = (
+            {"http": rt.proxy, "https": rt.proxy} if rt.proxy else None
+        )
         if cookies:
             for name, value in cookies.items():
                 self.session.cookies.set(name, value)
@@ -176,6 +178,7 @@ class HttpTransport(Transport):
             params=params,
             data=body.encode("utf-8") if body is not None else None,
             headers=headers,
+            proxies=self._proxies,
             timeout=self.rt.timeout,
             allow_redirects=True,
         )

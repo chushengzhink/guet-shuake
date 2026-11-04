@@ -145,64 +145,82 @@ class LockBusy(RuntimeError):
     """锁已被另一个进程持有。"""
 
 
-def pid_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    if os.name == "nt":
-        import ctypes
+def _lock_handle(fh) -> bool:
+    """非阻塞地对文件首字节加独占锁；拿不到返回 False。
 
-        kernel32 = ctypes.windll.kernel32
-        handle = kernel32.OpenProcess(0x1000, False, pid)
-        if not handle:
-            return False
-        kernel32.CloseHandle(handle)
-        return True
+    加锁前后都不要写这个文件：Windows 上把字节范围锁住后，连 close() 时的
+    flush 都会 PermissionError，所以 pid 是在拿到锁之后才写到后面去。
+    """
     try:
-        os.kill(pid, 0)
+        fh.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         return False
     return True
 
 
+def _unlock_handle(fh) -> None:
+    try:
+        fh.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    except OSError:  # pragma: no cover - 释放失败无所谓，进程退出系统会回收
+        pass
+
+
 @contextmanager
-def run_lock(path: Path, ttl_seconds: int = 6 * 3600) -> Iterator[None]:
-    """进程级独占锁（pid 文件）：同一账号/同一 profile 只允许一个进程在跑。"""
+def run_lock(path: Path) -> Iterator[None]:
+    """进程级独占锁：同一账号 / 同一 profile 只允许一个进程在跑。
+
+    用操作系统的文件锁（msvcrt / flock），**不用文件年龄判断**：
+    进程崩溃时系统自动释放，进程活多久锁就有效多久，不存在「跑满 6 小时锁失效」的问题。
+    锁文件本身保留不删（内容只是 pid，方便排查），靠锁而不是靠存在性。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        age = 0.0
+    if not path.exists() or path.stat().st_size == 0:
         try:
-            age = time.time() - path.stat().st_mtime
-        except OSError:
+            path.write_bytes(b"#")          # 首字节留给 OS 锁
+        except OSError:  # pragma: no cover
             pass
-        pid = 0
-        try:
-            text = path.read_text(encoding="utf-8").strip()
-            pid = int(text) if text.isdigit() else 0
-        except OSError:
-            pass
-        if age < ttl_seconds and pid_alive(pid):
-            raise LockBusy(f"已被进程 {pid} 占用（{path}）")
-        try:
-            path.unlink()
-        except OSError:
-            pass
+    fh = open(path, "r+b")
     try:
-        fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError as exc:  # pragma: no cover - 竞态
-        raise LockBusy(f"无法获取锁（{path}）") from exc
+        if not _lock_handle(fh):
+            holder = ""
+            try:
+                fh.seek(1)                     # 跳过被 OS 锁管住的首字节
+                holder = fh.read(32).decode("utf-8", "ignore").strip("\0 \r\n#")
+            except OSError:
+                pass
+            raise LockBusy(f"已被进程 {holder or '?'} 占用（{path}）")
+    except BaseException:
+        fh.close()
+        raise
+
     try:
-        os.write(fd, str(os.getpid()).encode())
-        os.close(fd)
+        try:
+            fh.truncate(1)                     # 保留首字节的占位，pid 写在后面
+            fh.seek(1)
+            fh.write(str(os.getpid()).encode())
+            fh.flush()
+        except OSError:  # pragma: no cover
+            pass
         yield
     finally:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
-        try:
-            path.unlink()
-        except OSError:
-            pass
+        _unlock_handle(fh)
+        fh.close()          # 只关一次
 
 
 def human_seconds(seconds: float) -> str:
