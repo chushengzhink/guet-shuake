@@ -93,23 +93,11 @@ python start.py                           # 终端版向导
 
 ## 代码签名
 
-构建产物已做代码签名（SHA256 + 时间戳），但仓库里用的是**自签名证书**——它能保证"文件没被篡改"，但**不等于受信任**：别人第一次运行时仍会看到「Windows 已保护你的电脑 · 未知发布者」。
+旧版安装包使用**自签名证书**，其他电脑不默认信任。Windows 11「智能应用控制」可能直接阻止运行，不能套用 SmartScreen 的「更多信息 → 仍要运行」说明。导入开发证书也不是跨电脑发布方案。
 
-三个选择：
+正式发布需要受信任的代码签名证书或服务，签署应用和安装包并附时间戳。签名可验证发布者，但**不能保证 SmartScreen 信誉、智能应用控制和企业策略全部无提示放行**。未配置正式证书时，CI 禁止发布 Release，只能生成开发测试产物。
 
-1. **直接运行**：点「更多信息 → 仍要运行」。
-2. **信任作者**：把仓库里的公钥证书导入「受信任的根证书颁发机构」，之后本机不再提示
-   ```powershell
-   Import-Certificate -FilePath packaging\certs\guet-shuake-dev.cer -CertStoreLocation Cert:\CurrentUser\Root
-   ```
-   想撤销：`Get-ChildItem Cert:\CurrentUser\Root | Where-Object { $_.Subject -like '*GUET Shuake*' } | Remove-Item`
-3. **彻底无提示**：必须买代码签名证书（OV/EV），然后用它签
-   ```powershell
-   powershell -File packaging\sign.ps1 -Mode pfx -PfxPath my.pfx -PfxPassword ****** -Targets "packaging\output\*.exe"
-   ```
-   开源项目还可以申请 [SignPath.io](https://signpath.io/) 的 OSS 免费签名。
-
-构建时自动签名：`build.ps1 -Sign`（默认自签名），正式证书则 `-Sign -SignMode pfx -PfxPath my.pfx -PfxPassword ******`。产物旁边会生成 `SHA256SUMS.txt`，下载后可核对：
+配置及验收见 **[签名与跨电脑运行](packaging/SIGNING.md)**。`full` 内置浏览器解决运行依赖问题，不会赋予签名信任。`SHA256SUMS.txt` 用于核对下载完整性，不能替代发布者验证：
 
 ```powershell
 Get-FileHash .\GuetShuake-1.0.0-full-setup.exe -Algorithm SHA256
@@ -169,8 +157,8 @@ python -m unittest discover -s tests -q      # 83 项，全部离线
 ```powershell
 git add -A; git commit -m "feat: ..."; git push
 
-# 本地构建（自动签名 + 生成 SHA256SUMS.txt）
-powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -Variant both -Sign
+# 正式构建：先安全设置 GUET_CODESIGN_PASSWORD 环境变量
+powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -Variant both -Version 1.0.1 -Release -Sign -SignMode pfx -PfxPath C:\certs\codesign.pfx
 
 # 打 tag 并把安装包挂上 Release
 gh release create v1.0.1 packaging\output\GuetShuake-1.0.1-*.exe packaging\output\SHA256SUMS.txt `
@@ -180,4 +168,4 @@ gh release create v1.0.1 packaging\output\GuetShuake-1.0.1-*.exe packaging\outpu
 > tag **不会**自动触发 CI：这样本地验证过的签名包不会被 CI 产物覆盖。
 > 想用 CI 出包，到 Actions → `build-release` → Run workflow（勾选 publish）。
 
-仓库里的 `packaging/certs/guet-shuake-dev.cer` 是自签名公钥，用户可以导入以信任本工具（见上一节）。
+仓库里的开发证书仅供本地测试，不是公开发行的信任凭据。

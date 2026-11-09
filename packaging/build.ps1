@@ -20,11 +20,18 @@ param(
     [ValidateSet('selfsigned', 'pfx')]
     [string]$SignMode = 'selfsigned',
     [string]$PfxPath,
-    [string]$PfxPassword,
+    [string]$PfxPassword = $env:GUET_CODESIGN_PASSWORD,
+    [switch]$Release,
     [switch]$AllowMissingBrowser
 )
 
 $ErrorActionPreference = 'Stop'
+if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw '版本号必须为 x.y.z' }
+if ($Release -and (-not $Sign -or $SignMode -ne 'pfx' -or $AllowMissingBrowser)) {
+    throw '正式发布需要 -Sign -SignMode pfx，不能跳过浏览器检查'
+}
+$previousSigningPassword = $env:GUET_CODESIGN_PASSWORD
+$env:GUET_CODESIGN_PASSWORD = $PfxPassword
 $packaging = Split-Path -Parent $MyInvocation.MyCommand.Path
 $root = Split-Path -Parent $packaging
 Push-Location $root
@@ -57,6 +64,7 @@ try {
         $cmd = Get-Command iscc.exe -ErrorAction SilentlyContinue
         if ($cmd) { $iscc = $cmd.Source }
     }
+    if ($Release -and -not $iscc) { throw '正式发布需要 Inno Setup' }
     Write-Host "Inno Setup: $iscc" -ForegroundColor DarkGray
 
     $targets = if ($Variant -eq 'both') { @('full', 'lite') } else { @($Variant) }
@@ -87,7 +95,6 @@ try {
             # 先签 exe，再打安装包 —— 这样装进去的就是已签名的可执行文件
             $signArgs = @{ Mode = $SignMode; Targets = $exe }
             if ($PfxPath) { $signArgs['PfxPath'] = $PfxPath }
-            if ($PfxPassword) { $signArgs['PfxPassword'] = $PfxPassword }
             & powershell -ExecutionPolicy Bypass -File (Join-Path $packaging 'sign.ps1') @signArgs
             if ($LASTEXITCODE -ne 0) { throw 'exe 签名失败，已中止（发布物不能是无签名状态）' }
         }
@@ -102,7 +109,6 @@ try {
                     Targets = (Join-Path $packaging "output\GuetShuake-$Version-$v-setup.exe")
                 }
                 if ($PfxPath) { $setupArgs['PfxPath'] = $PfxPath }
-                if ($PfxPassword) { $setupArgs['PfxPassword'] = $PfxPassword }
                 & powershell -ExecutionPolicy Bypass -File (Join-Path $packaging 'sign.ps1') @setupArgs
                 if ($LASTEXITCODE -ne 0) { throw '安装包签名失败，已中止' }
             }
@@ -126,5 +132,6 @@ try {
     }
 }
 finally {
+    $env:GUET_CODESIGN_PASSWORD = $previousSigningPassword
     Pop-Location
 }

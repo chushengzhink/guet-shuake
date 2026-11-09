@@ -8,7 +8,7 @@
                   除非用户把证书导入到「受信任的根证书颁发机构」（-TrustLocal 只在
                   当前用户下导入，方便本机测试）。
       pfx         用真实代码签名证书（.pfx）签名 —— 买了证书就走这条，
-                  再配合时间戳服务器，才是真正对用户无告警的签名。
+                  配合时间戳验证发布者，但不保证所有安全策略无告警。
 
 .EXAMPLE
     # 自签名（开发/测试）
@@ -22,7 +22,7 @@ param(
     [ValidateSet('selfsigned', 'pfx')]
     [string]$Mode = 'selfsigned',
     [string]$PfxPath,
-    [string]$PfxPassword,
+    [string]$PfxPassword = $env:GUET_CODESIGN_PASSWORD,
     [string[]]$Targets,
     [switch]$TrustLocal,
     [string]$TimestampServer = 'http://timestamp.digicert.com'
@@ -96,7 +96,15 @@ function Get-SigningCert {
     return Get-Item "Cert:\CurrentUser\My\$($cert.Thumbprint)"
 }
 
+if ($Mode -eq 'pfx' -and $TrustLocal) { throw '正式签名禁止通过导入根证书改变信任判断' }
 $certificate = Get-SigningCert
+if ($Mode -eq 'pfx') {
+    if (-not $certificate.HasPrivateKey) { throw '证书没有可用私钥' }
+    if ($certificate.Subject -eq $certificate.Issuer) { throw '正式发布不能使用自签名证书' }
+    if ($certificate.NotAfter -le (Get-Date) -or $certificate.NotBefore -gt (Get-Date)) {
+        throw '签名证书不在有效期内'
+    }
+}
 Write-Host "签名证书：$($certificate.Subject)" -ForegroundColor Cyan
 Write-Host "指纹：$($certificate.Thumbprint)" -ForegroundColor DarkGray
 
@@ -125,9 +133,9 @@ foreach ($file in $files) {
     try {
         $sig = Set-AuthenticodeSignature -FilePath $file -Certificate $certificate `
             -HashAlgorithm SHA256 -TimestampServer $TimestampServer -ErrorAction Stop
-        if ($Mode -eq 'pfx' -and $sig.Status -ne 'Valid') {
+        if ($Mode -eq 'pfx' -and ($sig.Status -ne 'Valid' -or -not $sig.TimeStamperCertificate)) {
             # 正式证书签完必须是 Valid，否则说明证书/时间戳有问题，不能发
-            Write-Warning ("  ✗ {0} 正式证书签名后状态为 {1}：{2}" -f $name, $sig.Status, $sig.StatusMessage)
+            Write-Warning ("  ✗ {0} 正式签名或时间戳校验失败，状态 {1}：{2}" -f $name, $sig.Status, $sig.StatusMessage)
             $failed++
         }
         elseif ($sig.Status -eq 'Valid' -or $sig.Status -eq 'UnknownError') {
@@ -153,6 +161,6 @@ foreach ($file in $files) {
 
 if ($Mode -eq 'selfsigned' -and -not $TrustLocal) {
     Write-Host "`n提示：自签名不会被系统信任，用户首次运行仍会看到「未知发布者」。" -ForegroundColor Yellow
-    Write-Host "      要彻底消除提示需购买代码签名证书（OV/EV），或用 -Mode pfx 指定。" -ForegroundColor Yellow
+    Write-Host "      跨电脑验证发布者需要受信任签名；正式证书也不保证所有安全策略无提示。" -ForegroundColor Yellow
 }
 exit $(if ($failed -gt 0) { 1 } else { 0 })

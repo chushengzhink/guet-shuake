@@ -25,6 +25,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: 正式发布必须配置受信任签名
+        if: ${{ inputs.publish }}
+        shell: pwsh
+        env:
+          PFX_B64: ${{ secrets.CODESIGN_PFX_BASE64 }}
+        run: |
+          if (-not $env:PFX_B64) {
+            throw '正式发布需要配置代码签名证书，禁止回退自签名。参见 packaging/SIGNING.md'
+          }
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -51,12 +61,11 @@ jobs:
       - name: 解析版本号
         id: ver
         shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          $v = if ('${{ github.event_name }}' -eq 'workflow_dispatch') {
-            '${{ github.event.inputs.version }}'
-          } else {
-            '${{ github.ref_name }}' -replace '^v', ''
-          }
+          $v = $env:RELEASE_VERSION
+          if ($v -notmatch '^\d+\.\d+\.\d+$') { throw '版本号必须为 x.y.z' }
           "value=$v" >> $env:GITHUB_OUTPUT
 
       - name: 安装 Inno Setup
@@ -66,25 +75,37 @@ jobs:
         shell: powershell
         env:
           PFX_B64: ${{ secrets.CODESIGN_PFX_BASE64 }}
-          PFX_PWD: ${{ secrets.CODESIGN_PFX_PASSWORD }}
+          GUET_CODESIGN_PASSWORD: ${{ secrets.CODESIGN_PFX_PASSWORD }}
+          RELEASE_VERSION: ${{ steps.ver.outputs.value }}
+          PUBLISH_RELEASE: ${{ inputs.publish }}
         run: |
+          $ErrorActionPreference = 'Stop'
+          $certPath = Join-Path $env:RUNNER_TEMP 'guet-codesign.pfx'
           $extra = @{
             Variant  = 'both'
-            Version  = '${{ steps.ver.outputs.value }}'
-            Sign     = $true
-            SignMode = 'selfsigned'
+            Version  = $env:RELEASE_VERSION
           }
-          if ($env:PFX_B64) {
-            [IO.File]::WriteAllBytes("codesign.pfx", [Convert]::FromBase64String($env:PFX_B64))
-            $extra.SignMode = 'pfx'
-            $extra.PfxPath = "codesign.pfx"
-            $extra.PfxPassword = $env:PFX_PWD
-            Write-Host "使用仓库 secrets 里的正式证书签名"
-          } else {
-            Write-Host "没有配置 CODESIGN_PFX_BASE64，使用自签名（用户首次运行会有未知发布者提示）"
+          try {
+            if ($env:PFX_B64) {
+              [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($env:PFX_B64))
+              $extra.Sign = $true
+              $extra.SignMode = 'pfx'
+              $extra.PfxPath = $certPath
+            }
+            if ($env:PUBLISH_RELEASE -eq 'true') { $extra.Release = $true }
+            & packaging\build.ps1 @extra
+          } finally {
+            if (Test-Path -LiteralPath $certPath) { Remove-Item -LiteralPath $certPath -Force }
+            Remove-Item Env:GUET_CODESIGN_PASSWORD -ErrorAction SilentlyContinue
+            Remove-Item Env:PFX_B64 -ErrorAction SilentlyContinue
           }
-          & packaging\build.ps1 @extra
-          if (Test-Path codesign.pfx) { Remove-Item codesign.pfx -Force }
+
+      - name: 保存构建产物（无证书时仅供开发测试）
+        uses: actions/upload-artifact@v4
+        with:
+          name: GuetShuake-${{ steps.ver.outputs.value }}
+          path: packaging/output/*
+          if-no-files-found: error
 
       - name: 收集产物
         shell: pwsh
